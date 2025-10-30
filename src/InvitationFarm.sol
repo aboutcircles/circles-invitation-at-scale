@@ -9,7 +9,7 @@ import {InvitationBot} from "src/InvitationBot.sol";
 /// @title InvitationFarm
 /// @notice Manages a farm of InvitationBot instances, distributes/claims invite capacity, and grows the farm.
 /// @dev
-/// - Admin configures roles/quotas and dependencies.
+/// - Admin (multisig) configures roles/quotas and dependencies.
 /// - Maintainer performs operational tasks (mint upkeep, metadata updates, growth).
 /// - Seeder or an existing Bot may bootstrap more bots via the module’s generic-call proxy.
 /// - Invites are allocated in units of `INVITATION_FEE` from bots round-robin.
@@ -179,7 +179,9 @@ contract InvitationFarm {
         admin = msg.sender;
     }
 
-    // admin functions
+    /*//////////////////////////////////////////////////////////////
+                               Admin Functions
+    //////////////////////////////////////////////////////////////*/
 
     /// @notice Sets a new admin.
     /// @param newAdmin The new admin address.
@@ -220,7 +222,9 @@ contract InvitationFarm {
         emit InvitationModuleUpdated(newInvitationModule, genericCallProxy);
     }
 
-    // init function
+    /*//////////////////////////////////////////////////////////////
+                               Initialization
+    //////////////////////////////////////////////////////////////*/
 
     /// @notice Creates multiple bots via the module’s proxy and adds them to the list.
     /// @param numberOfBots Number of bots to create.
@@ -251,7 +255,9 @@ contract InvitationFarm {
         emit BotCreated(createdBot);
     }
 
-    // maintaner functions
+    /*//////////////////////////////////////////////////////////////
+                              Maintainer Functions
+    //////////////////////////////////////////////////////////////*/
 
     /// @notice Updates metadata digest for a range of bots, walking forward from `startBot`.
     /// @dev Wraps through the sentinel if encountered. Caps `numberOfBots` to `totalBots`.
@@ -300,7 +306,9 @@ contract InvitationFarm {
         emit FarmGrown(msg.sender, numberOfBots, totalBots);
     }
 
-    // share invites
+    /*//////////////////////////////////////////////////////////////
+                               Invite Claiming
+    //////////////////////////////////////////////////////////////*/
 
     /// @notice Claims multiple invites for the caller, consuming their quota.
     /// @param numberOfInvites Number of invites to claim.
@@ -320,6 +328,10 @@ contract InvitationFarm {
         uint256[] memory ids = claimInvites(1);
         id = ids[0];
     }
+
+    /*//////////////////////////////////////////////////////////////
+                               Allocation Core
+    //////////////////////////////////////////////////////////////*/
 
     /// @notice Internal allocator that walks bots round-robin and transfers CRC for invites or growth.
     /// @dev
@@ -375,7 +387,9 @@ contract InvitationFarm {
         lastUsedBot = botToUse;
     }
 
-    // internal
+    /*//////////////////////////////////////////////////////////////
+                                 Internal
+    //////////////////////////////////////////////////////////////*/
 
     /// @notice Reverts if `avatar` is not a human in the Circles Hub.
     /// @param avatar Address to validate.
@@ -405,7 +419,9 @@ contract InvitationFarm {
         totalBots++;
     }
 
-    // bot interactions
+    /*//////////////////////////////////////////////////////////////
+                              Bot Interactions
+    //////////////////////////////////////////////////////////////*/
 
     /// @notice Triggers Hub `personalMint` as the given bot.
     /// @param bot The bot to mint for.
