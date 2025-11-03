@@ -22,7 +22,7 @@ interface IHub {
     /// @notice trust sets the trust of the caller for the receiver with an expiry time.
     function trust(address trustReceiver, uint96 expiry) external;
     /// @notice isTrusted returns true if the expiry time of the trust relation is in the future
-    function isTrusted(address truster, address trustee) external returns (bool);
+    function isTrusted(address truster, address trustee) external view returns (bool);
     /// @notice groupMint allows the holder of collateral to directly group mint
     function groupMint(
         address group,
