@@ -57,17 +57,23 @@ contract InvitationModuleTest is Test, HubStorageWrites {
 
     function testDirectInvite() public {
         vm.prank(originInviter);
-        IHub(HUB).safeTransferFrom(
-            originInviter, address(invitationModule), uint256(uint160(originInviter)), 96 ether, abi.encode(invitee1)
-        );
+        IHub(HUB)
+            .safeTransferFrom(
+                originInviter,
+                address(invitationModule),
+                uint256(uint160(originInviter)),
+                96 ether,
+                abi.encode(invitee1)
+            );
         assertTrue(IHub(HUB).isHuman(invitee1));
     }
 
     function testProxyInvite() public {
         vm.prank(originInviter);
-        IHub(HUB).safeTransferFrom(
-            originInviter, address(invitationModule), uint256(uint160(proxyInviter)), 96 ether, abi.encode(invitee2)
-        );
+        IHub(HUB)
+            .safeTransferFrom(
+                originInviter, address(invitationModule), uint256(uint160(proxyInviter)), 96 ether, abi.encode(invitee2)
+            );
         assertTrue(IHub(HUB).isHuman(invitee2));
     }
 }
