@@ -44,4 +44,5 @@ interface IHub {
     ) external;
     function personalMint() external;
     function avatars(address avatar) external view returns (address);
+    function day(uint256 timestamp) external view returns (uint64);
 }
