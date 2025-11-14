@@ -166,6 +166,14 @@ contract ReferralsModule {
     //////////////////////////////////////////////////////////////*/
 
     /// @notice Initializes immutable references and computes the EIP-712 domain separator.
+    /// @dev
+    /// - Stores the Invitation Module address and loads its associated `GENERIC_CALL_PROXY`.
+    /// - Computes the EIP-712 domain separator for this contract instance using:
+    ///       name = "ReferralsModule", version = "1", chainId = block.chainid.
+    /// - Calls {_initializer()} to build the Safe setup calldata and pre-computes its
+    ///   `ACCOUNT_INITIALIZER_HASH`, which is later combined with each `signer` to form the
+    ///   CREATE2 salt used by `createProxyWithNonce`. This ensures *deterministic Safe addresses*
+    ///   across deployments for the same initializer and `signer`.
     /// @param invitationModule The Invitation Module address; also the source of `GENERIC_CALL_PROXY`.
     constructor(address invitationModule) {
         INVITATION_MODULE = invitationModule;
@@ -303,6 +311,17 @@ contract ReferralsModule {
                           INTERNAL FUNCTIONS
     //////////////////////////////////////////////////////////////*/
 
+    /// @notice Constructs the Safe initializer calldata used for pre-deployed referral Safes.
+    /// @dev
+    /// - Configures a single owner: `SAFE_WEB_AUTHN_SHARED_SIGNER` with threshold = 1.
+    /// - Uses `SAFE_MODULE_SETUP` to enable three modules on the Safe:
+    ///   * `SAFE_4337_MODULE`
+    ///   * `INVITATION_MODULE`
+    ///   * `address(this)` (the ReferralsModule)
+    /// - Sets `SAFE_4337_MODULE` as the Safe’s fallback handler.
+    /// - The returned bytes are passed to `ISafe.setup` during proxy deployment and also hashed
+    ///   into `ACCOUNT_INITIALIZER_HASH` for CREATE2 address prediction.
+    /// @return initializer ABI-encoded calldata for `ISafe.setup` that fully configures the Safe.
     function _initializer() internal view returns (bytes memory initializer) {
         address[] memory modules = new address[](3);
         modules[0] = SAFE_4337_MODULE;
