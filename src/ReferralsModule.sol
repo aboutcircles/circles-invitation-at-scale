@@ -122,8 +122,7 @@ contract ReferralsModule {
     address internal constant SENTINEL = address(1);
 
     /// @notice Precomputed initializer hash used in CREATE2 salt for deterministic address prediction.
-    bytes32 internal constant ACCOUNT_INITIALIZER_HASH =
-        0x440ea2f93c9703f7d456d48796f7bc25b8721582535a492ce0a09df32146242a;
+    bytes32 internal immutable ACCOUNT_INITIALIZER_HASH;
 
     /// @notice Safe proxy creation code hash used in CREATE2 address prediction.
     bytes32 internal constant ACCOUNT_CREATION_CODE_HASH =
@@ -180,6 +179,8 @@ contract ReferralsModule {
                 address(this)
             )
         );
+        bytes memory initializer = _initializer();
+        ACCOUNT_INITIALIZER_HASH = keccak256(initializer);
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -200,25 +201,7 @@ contract ReferralsModule {
     function createAccount(address signer) public onlyGenericCallProxy returns (address account) {
         if (accounts[signer].account != address(0)) revert SignerAlreadyUsed();
 
-        address[] memory modules = new address[](3);
-        modules[0] = SAFE_4337_MODULE;
-        modules[1] = INVITATION_MODULE;
-        modules[2] = address(this);
-        bytes memory data = abi.encodeWithSelector(ISafeModuleSetup.enableModules.selector, modules);
-
-        address[] memory owners = new address[](1);
-        owners[0] = SAFE_WEB_AUTHN_SHARED_SIGNER;
-        bytes memory initializer = abi.encodeWithSelector(
-            ISafe.setup.selector,
-            owners,
-            uint256(1), // threshold
-            SAFE_MODULE_SETUP,
-            data,
-            SAFE_4337_MODULE, // fallback handler
-            address(0),
-            uint256(0),
-            payable(address(0))
-        );
+        bytes memory initializer = _initializer();
 
         account = SAFE_PROXY_FACTORY.createProxyWithNonce(SAFE_SINGLETON, initializer, uint256(uint160(signer)));
         accounts[signer].account = account;
@@ -248,7 +231,7 @@ contract ReferralsModule {
     /// @dev Uses CREATE2 with `ACCOUNT_INITIALIZER_HASH` and `ACCOUNT_CREATION_CODE_HASH` via `SAFE_PROXY_FACTORY`.
     /// @param signer The offchain public address chosen by the origin inviter as the pre-deployment key.
     /// @return predictedAddress The deterministic Safe address that would be deployed for `signer`.
-    function computeAddress(address signer) external pure returns (address predictedAddress) {
+    function computeAddress(address signer) external view returns (address predictedAddress) {
         bytes32 salt = keccak256(abi.encodePacked(ACCOUNT_INITIALIZER_HASH, uint256(uint160(signer))));
         predictedAddress = address(
             uint160(
@@ -266,7 +249,8 @@ contract ReferralsModule {
     //////////////////////////////////////////////////////////////*/
 
     /// @notice Claims the pre-made Safe by proving knowledge of the offchain secret (for `signer`)
-    ///         and configuring the device WebAuthn passkey; then disables this module.
+    ///         and configuring the device WebAuthn passkey; sets Name Registry metadata in a single transaction;
+    ///         then disables this module.
     /// @dev
     /// - The invitee signs the EIP-712 passkey digest using the offchain secret key provided by the origin inviter.
     /// - The module recovers `signer` from the signature, locates the pre-made Safe, and finalizes:
@@ -280,42 +264,12 @@ contract ReferralsModule {
     /// @param y The Y coordinate of the WebAuthn public key.
     /// @param verifier The WebAuthn verifier/authenticator contract address.
     /// @param signature The 65-byte ECDSA signature over the EIP-712 passkey digest, signed by the offchain secret key.
-    function claimAccount(uint256 x, uint256 y, address verifier, bytes calldata signature) external {
-        address account = _transferOwnership(x, y, verifier, signature);
-        // disable module
-        _disableModule(account);
-    }
-
-    /// @notice Claims the pre-made Safe and sets Name Registry metadata in a single transaction.
-    /// @dev Follows the same claim flow as the base variant and then updates the metadata digest.
-    /// @param x The X coordinate of the passkey public key.
-    /// @param y The Y coordinate of the passkey public key.
-    /// @param verifier The verifier/authenticator contract address.
-    /// @param signature The 65-byte ECDSA signature over the EIP-712 passkey digest.
-    /// @param metadataDigest The metadata digest to set in the Name Registry.
     function claimAccount(uint256 x, uint256 y, address verifier, bytes calldata signature, bytes32 metadataDigest)
         external
     {
         address account = _transferOwnership(x, y, verifier, signature);
         // set metadatadigest
         _updateMetadataDigest(account, metadataDigest);
-        // disable module
-        _disableModule(account);
-    }
-
-    /// @notice Claims the pre-made Safe and sets the affiliate group in a single transaction.
-    /// @dev Follows the same claim flow as the base variant and then registers the affiliate group.
-    /// @param x The X coordinate of the passkey public key.
-    /// @param y The Y coordinate of the passkey public key.
-    /// @param verifier The verifier/authenticator contract address.
-    /// @param signature The 65-byte ECDSA signature over the EIP-712 passkey digest.
-    /// @param affiliateGroup The affiliate group address to register.
-    function claimAccount(uint256 x, uint256 y, address verifier, bytes calldata signature, address affiliateGroup)
-        external
-    {
-        address account = _transferOwnership(x, y, verifier, signature);
-        // set affiliate group
-        _setAffiliateGroup(account, affiliateGroup);
         // disable module
         _disableModule(account);
     }
@@ -348,6 +302,28 @@ contract ReferralsModule {
     /*//////////////////////////////////////////////////////////////
                           INTERNAL FUNCTIONS
     //////////////////////////////////////////////////////////////*/
+
+    function _initializer() internal view returns (bytes memory initializer) {
+        address[] memory modules = new address[](3);
+        modules[0] = SAFE_4337_MODULE;
+        modules[1] = INVITATION_MODULE;
+        modules[2] = address(this);
+        bytes memory data = abi.encodeWithSelector(ISafeModuleSetup.enableModules.selector, modules);
+
+        address[] memory owners = new address[](1);
+        owners[0] = SAFE_WEB_AUTHN_SHARED_SIGNER;
+        initializer = abi.encodeWithSelector(
+            ISafe.setup.selector,
+            owners,
+            uint256(1), // threshold
+            SAFE_MODULE_SETUP,
+            data,
+            SAFE_4337_MODULE, // fallback handler
+            address(0),
+            uint256(0),
+            payable(address(0))
+        );
+    }
 
     /// @notice Verifies the invitee’s claim (EIP-712 signature using the offchain secret), marks the account as claimed,
     ///         configures WebAuthn, calls `personalMint`, and burns any CRC above `WELCOME_BONUS`.

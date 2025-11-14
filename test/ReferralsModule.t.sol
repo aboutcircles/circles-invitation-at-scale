@@ -31,6 +31,8 @@ contract ReferralsModuleTest is Test, HubStorageWrites {
     uint256 x2 = uint256(bytes32(0x770326b515dcf72d2211b82b474a84a3f903e9dc612f4d6a1088e04c5849046f));
     uint256 y2 = uint256(bytes32(0x239c115887b698669498eb595a7d2fadb66d912f95c691e2dcc22161ce2ba036));
 
+    bytes32 metadataDigest = 0x9f24ca27dfd6847edbde6f254485635757ebbf7a2eb76e406046f527bffaeb86;
+
     // test offchain secrets
     address signer1 = 0xeA90D70a428500B5cA85DCa9792A52a3b852D307;
     uint256 pk1 = 0x592da4069533d8c23fe722ca42c45074315000a188003a518fc165d8dccd11ba;
@@ -98,7 +100,7 @@ contract ReferralsModuleTest is Test, HubStorageWrites {
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(pk1, digest);
         bytes memory signature = abi.encodePacked(r, s, v);
 
-        referralsModule.claimAccount(x1, y1, verifier, signature);
+        referralsModule.claimAccount(x1, y1, verifier, signature, metadataDigest);
 
         (address account,) = referralsModule.accounts(signer1);
 
@@ -120,7 +122,7 @@ contract ReferralsModuleTest is Test, HubStorageWrites {
         (v, r, s) = vm.sign(pk2, digest);
         signature = abi.encodePacked(r, s, v);
 
-        referralsModule.claimAccount(x2, y2, verifier, signature);
+        referralsModule.claimAccount(x2, y2, verifier, signature, metadataDigest);
 
         (account,) = referralsModule.accounts(signer2);
 
@@ -131,5 +133,7 @@ contract ReferralsModuleTest is Test, HubStorageWrites {
         passkey = abi.encode(x2, y2, verifier);
         storedPasskey = ISafe(account).getStorageAt(SIGNER_SLOT, 3);
         assertEq(keccak256(passkey), keccak256(storedPasskey));
+
+        referralsModule.computeAddress(signer2);
     }
 }
