@@ -88,9 +88,8 @@ contract InvitationFarmTest is Test, HubStorageWrites {
         values[7] = 96 ether;
         values[8] = 96 ether;
         values[9] = 96 ether;
-        bytes memory data = abi.encode(
-            address(invitationFarm), abi.encodeWithSelector(InvitationFarm.createBots.selector, uint256(10))
-        );
+        bytes memory data =
+            abi.encode(address(invitationFarm), abi.encodeWithSelector(InvitationFarm.createBots.selector, uint256(10)));
 
         vm.prank(seeder);
         IHub(HUB).safeBatchTransferFrom(seeder, address(invitationModule), ids, values, data);
