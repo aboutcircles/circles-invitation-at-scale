@@ -114,21 +114,23 @@ contract InvitationModuleTest is Test, HubStorageWrites {
             // Revert: Value less than 96 CRC
             vm.prank(originInviter);
             vm.expectRevert(abi.encodeWithSelector(InvitationModuleTest.NotExactInvitationFee.selector, ""));
-            IHub(HUB).safeTransferFrom(
-                originInviter,
-                address(invitationModule),
-                uint256(uint160(originInviter)),
-                91 ether,
-                abi.encode(invitee1)
-            );
+            IHub(HUB)
+                .safeTransferFrom(
+                    originInviter,
+                    address(invitationModule),
+                    uint256(uint160(originInviter)),
+                    91 ether,
+                    abi.encode(invitee1)
+                );
         }
         {
             // Revert: Data don't encode invitee address
             vm.prank(originInviter);
             vm.expectRevert(abi.encodeWithSelector(InvitationModuleTest.InvalidEncoding.selector, ""));
-            IHub(HUB).safeTransferFrom(
-                originInviter, address(invitationModule), uint256(uint160(originInviter)), 96 ether, bytes("")
-            );
+            IHub(HUB)
+                .safeTransferFrom(
+                    originInviter, address(invitationModule), uint256(uint160(originInviter)), 96 ether, bytes("")
+                );
         }
         {
             // Revert: Non human can't invite
@@ -141,9 +143,10 @@ contract InvitationModuleTest is Test, HubStorageWrites {
 
             vm.prank(nonHuman);
             vm.expectRevert(abi.encodeWithSelector(InvitationModuleTest.HumanValidationFailed.selector, nonHuman));
-            IHub(HUB).safeTransferFrom(
-                nonHuman, address(invitationModule), uint256(uint160(nonHuman)), 96 ether, abi.encode(invitee1)
-            );
+            IHub(HUB)
+                .safeTransferFrom(
+                    nonHuman, address(invitationModule), uint256(uint160(nonHuman)), 96 ether, abi.encode(invitee1)
+                );
         }
 
         // Case 1: OriginInviter has invitation module enabled && originInviter don't trust invitee1 -> valid
@@ -151,13 +154,14 @@ contract InvitationModuleTest is Test, HubStorageWrites {
             vm.prank(originInviter);
             vm.expectEmit(address(invitationModule));
             emit RegisterHuman(invitee1, originInviter, originInviter);
-            IHub(HUB).safeTransferFrom(
-                originInviter,
-                address(invitationModule),
-                uint256(uint160(originInviter)),
-                96 ether,
-                abi.encode(invitee1)
-            );
+            IHub(HUB)
+                .safeTransferFrom(
+                    originInviter,
+                    address(invitationModule),
+                    uint256(uint160(originInviter)),
+                    96 ether,
+                    abi.encode(invitee1)
+                );
 
             assertTrue(IHub(HUB).isHuman(invitee1));
             assertEq(IHub(HUB).balanceOf(originInviter, uint256(uint160(originInviter))), 0); // originInviter's 96 CRC is burnt
@@ -170,13 +174,14 @@ contract InvitationModuleTest is Test, HubStorageWrites {
 
             vm.prank(originInviter);
             vm.expectRevert(abi.encodeWithSelector(InvitationModuleTest.InviteeAlreadyRegistered.selector, invitee1));
-            IHub(HUB).safeTransferFrom(
-                originInviter,
-                address(invitationModule),
-                uint256(uint160(originInviter)),
-                96 ether,
-                abi.encode(invitee1)
-            );
+            IHub(HUB)
+                .safeTransferFrom(
+                    originInviter,
+                    address(invitationModule),
+                    uint256(uint160(originInviter)),
+                    96 ether,
+                    abi.encode(invitee1)
+                );
             // Note: testing case 2 is trivial as InvitationModule will call `enforceTrust` to set trust to invitee1 anyway
         } else {
             // Case 4: OriginInviter don't have invitation module disabled  && don't trust invitee1 -> revert
@@ -189,26 +194,28 @@ contract InvitationModuleTest is Test, HubStorageWrites {
             vm.expectRevert(
                 abi.encodeWithSelector(InvitationModuleTest.TrustRequired.selector, originInviter, invitee1)
             );
-            IHub(HUB).safeTransferFrom(
-                originInviter,
-                address(invitationModule),
-                uint256(uint160(originInviter)),
-                96 ether,
-                abi.encode(invitee1)
-            );
+            IHub(HUB)
+                .safeTransferFrom(
+                    originInviter,
+                    address(invitationModule),
+                    uint256(uint160(originInviter)),
+                    96 ether,
+                    abi.encode(invitee1)
+                );
 
             // Set trust to invitee1
             _setTrust(originInviter, invitee1);
 
             // Case 3: OriginInviter don't have invitation module enabled, but trust invitee1 -> valid
             vm.prank(originInviter);
-            IHub(HUB).safeTransferFrom(
-                originInviter,
-                address(invitationModule),
-                uint256(uint160(originInviter)),
-                96 ether,
-                abi.encode(invitee1)
-            );
+            IHub(HUB)
+                .safeTransferFrom(
+                    originInviter,
+                    address(invitationModule),
+                    uint256(uint160(originInviter)),
+                    96 ether,
+                    abi.encode(invitee1)
+                );
 
             assertTrue(IHub(HUB).isHuman(invitee1));
             assertEq(IHub(HUB).balanceOf(originInviter, uint256(uint160(originInviter))), 0); // originInviter's 96 CRC is burnt
@@ -233,17 +240,23 @@ contract InvitationModuleTest is Test, HubStorageWrites {
         vm.expectRevert(
             abi.encodeWithSelector(InvitationModuleTest.TrustRequired.selector, proxyInviter, originInviter)
         );
-        IHub(HUB).safeTransferFrom(
-            originInviter, address(invitationModule), uint256(uint160(proxyInviter)), 96 ether, abi.encode(invitee1)
-        );
+        IHub(HUB)
+            .safeTransferFrom(
+                originInviter, address(invitationModule), uint256(uint160(proxyInviter)), 96 ether, abi.encode(invitee1)
+            );
         _setTrust(proxyInviter, originInviter);
 
         if (isModuleEnabled) {
             // Case 1: originInviter and proxyInviter has module enabled -> valid
             vm.prank(originInviter);
-            IHub(HUB).safeTransferFrom(
-                originInviter, address(invitationModule), uint256(uint160(proxyInviter)), 96 ether, abi.encode(invitee1)
-            );
+            IHub(HUB)
+                .safeTransferFrom(
+                    originInviter,
+                    address(invitationModule),
+                    uint256(uint160(proxyInviter)),
+                    96 ether,
+                    abi.encode(invitee1)
+                );
             assertTrue(IHub(HUB).isHuman(invitee1));
             assertEq(IHub(HUB).balanceOf(originInviter, uint256(uint160(originInviter))), 96 ether); // originInviter's 96 CRC remains
             assertEq(IHub(HUB).balanceOf(proxyInviter, uint256(uint160(proxyInviter))), 0); // proxyInviter's 96 CRC is burnt
@@ -265,9 +278,14 @@ contract InvitationModuleTest is Test, HubStorageWrites {
             // Case 2: originInviter && proxyInviter don't have module enabled
             vm.prank(originInviter);
             vm.expectRevert(abi.encodeWithSelector(InvitationModuleTest.ModuleNotEnabled.selector, originInviter));
-            IHub(HUB).safeTransferFrom(
-                originInviter, address(invitationModule), uint256(uint160(proxyInviter)), 96 ether, abi.encode(invitee1)
-            );
+            IHub(HUB)
+                .safeTransferFrom(
+                    originInviter,
+                    address(invitationModule),
+                    uint256(uint160(proxyInviter)),
+                    96 ether,
+                    abi.encode(invitee1)
+                );
 
             vm.prank(originInviter);
             IModuleManager(originInviter).enableModule(address(invitationModule));
@@ -275,18 +293,28 @@ contract InvitationModuleTest is Test, HubStorageWrites {
             // Case 3: originInviter have invitationModule &&  proxyInviter don't have invitationModule enabled
             vm.prank(originInviter);
             vm.expectRevert(abi.encodeWithSelector(InvitationModuleTest.ModuleNotEnabled.selector, proxyInviter));
-            IHub(HUB).safeTransferFrom(
-                originInviter, address(invitationModule), uint256(uint160(proxyInviter)), 96 ether, abi.encode(invitee1)
-            );
+            IHub(HUB)
+                .safeTransferFrom(
+                    originInviter,
+                    address(invitationModule),
+                    uint256(uint160(proxyInviter)),
+                    96 ether,
+                    abi.encode(invitee1)
+                );
 
             vm.prank(proxyInviter);
             IModuleManager(proxyInviter).enableModule(address(invitationModule));
 
             // Both originInviter && proxyInviter have invitationModule enabled -> fallbacl to case 1 -> valid
             vm.prank(originInviter);
-            IHub(HUB).safeTransferFrom(
-                originInviter, address(invitationModule), uint256(uint160(proxyInviter)), 96 ether, abi.encode(invitee1)
-            );
+            IHub(HUB)
+                .safeTransferFrom(
+                    originInviter,
+                    address(invitationModule),
+                    uint256(uint160(proxyInviter)),
+                    96 ether,
+                    abi.encode(invitee1)
+                );
             assertTrue(IHub(HUB).isHuman(invitee1));
             return;
         }
