@@ -7,6 +7,7 @@ import {IModuleManager} from "src/interfaces/IModuleManager.sol";
 import {IHub} from "src/interfaces/IHub.sol";
 import {InvitationModule} from "src/InvitationModule.sol";
 import {ReferralsModule} from "src/ReferralsModule.sol";
+import {CirclesV2Setup} from "test/helpers/CirclesV2Setup.sol";
 
 /// @title Affiliate Group Registry Interface
 /// @notice Interface for managing affiliate group registrations
@@ -15,15 +16,6 @@ interface IAffiliateGroupRegistry {
     /// @param account The account address to query
     /// @return The affiliate group address
     function affiliateGroup(address account) external view returns (address);
-}
-
-/// @title Name Registry Interface
-/// @notice Interface for managing avatar metadata
-interface INameRegistry {
-    /// @notice Get the metadata digest for an avatar
-    /// @param account The account address to query
-    /// @return The metadata digest hash
-    function avatarToMetaDataDigest(address account) external view returns (bytes32);
 }
 
 /// @title Safe Interface
@@ -58,7 +50,7 @@ interface ISafe {
 
 /// @title ReferralsModule Test Contract
 /// @dev Tests account creation, claiming, and referral system features
-contract ReferralsModuleTest is Test, HubStorageWrites {
+contract ReferralsModuleTest is CirclesV2Setup, HubStorageWrites {
     /// @dev Storage slot for passkey signer data
     /// https://github.com/safe-fndn/safe-modules/blob/4367ecf2/modules/passkey/contracts/4337/SafeWebAuthnSharedSigner.sol#L13-L167
     /// SIGNER_SLOT = uint256(keccak256(abi.encode(address(this), _SIGNER_MAPPING_SLOT)));
@@ -67,9 +59,6 @@ contract ReferralsModuleTest is Test, HubStorageWrites {
 
     /// @dev Address of the affiliate group registry contract
     address internal constant AFFILIATE_GROUP_REGISTRY = address(0xca8222e780d046707083f51377B5Fd85E2866014);
-
-    /// @dev Address of the name registry contract
-    address internal constant NAME_REGISTRY = address(0xA27566fD89162cC3D40Cb59c87AAaA49B85F3474);
 
     /// @dev Address of the Safe WebAuthn shared signer contract
     address internal constant SAFE_WEB_AUTHN_SHARED_SIGNER = address(0xfD90FAd33ee8b58f32c00aceEad1358e4AFC23f9);
@@ -87,13 +76,13 @@ contract ReferralsModuleTest is Test, HubStorageWrites {
     ReferralsModule public referralsModule;
 
     /// @dev Test address for origin inviter
-    address originInviter = 0x68e3c2aa468D9a80A8d9Bb8fC53bf072FE98B83a;
+    address originInviter = makeAddr("originInviter");
 
     /// @dev Test address for proxy inviter
-    address proxyInviter = 0x3A63F544918051f9285cf97008705790FD280012;
+    address proxyInviter = makeAddr("proxyInviter");
 
     // test passkeys
-    /// @dev Test verifier address for passkey authentication
+    /// @dev FCLP256Verifier contract for passkey authentication
     address verifier = 0x445a0683e494ea0c5AF3E83c5159fBE47Cf9e765;
 
     /// @dev Test passkey x coordinate for first test account
@@ -113,16 +102,16 @@ contract ReferralsModuleTest is Test, HubStorageWrites {
 
     // test offchain secrets
     /// @dev Test signer address for first account
-    address signer1 = 0xeA90D70a428500B5cA85DCa9792A52a3b852D307;
+    address signer1;
 
     /// @dev Private key for first test signer
-    uint256 pk1 = 0x592da4069533d8c23fe722ca42c45074315000a188003a518fc165d8dccd11ba;
+    uint256 pk1;
 
     /// @dev Test signer address for second account
-    address signer2 = 0x582f688fAb9BE0053B365556981dEBA8Ba7D4280;
+    address signer2;
 
     /// @dev Private key for second test signer
-    uint256 pk2 = 0x8f7268379df23b4b20d0cae9c32e6f6283adc09a559d97cd648f3b9058686bcf;
+    uint256 pk2;
 
     /// @dev Error thrown when trying to reuse a signer that's already been used
     error SignerAlreadyUsed();
@@ -141,15 +130,18 @@ contract ReferralsModuleTest is Test, HubStorageWrites {
 
     /// @notice Set up test environment with fork, contracts, and test accounts
     /// @dev Initializes Gnosis fork, deploys contracts, and sets up test scenario
-    function setUp() public {
-        gnosisFork = vm.createFork(vm.envString("GNOSIS_RPC"));
-        vm.selectFork(gnosisFork);
+    function setUp() public override {
+        super.setUp();
+        vm.warp(INVITATION_ONLY_TIME + 1);
 
         invitationModule = new InvitationModule();
         referralsModule = new ReferralsModule(address(invitationModule));
 
+        (signer1, pk1) = makeAddrAndKey("signer1");
+        (signer2, pk2) = makeAddrAndKey("signer2");
+
         // set current day
-        day = IHub(HUB).day(block.timestamp);
+        day = HUB_V2.day(block.timestamp);
         // create test human accounts as safes
         // proxy
         _registerHuman(proxyInviter);
@@ -193,7 +185,7 @@ contract ReferralsModuleTest is Test, HubStorageWrites {
             values[i] = 96 ether;
         }
 
-        IHub(HUB).safeBatchTransferFrom(originInviter, address(invitationModule), ids, values, data);
+        HUB_V2.safeBatchTransferFrom(originInviter, address(invitationModule), ids, values, data);
 
         vm.stopPrank();
 
@@ -208,12 +200,12 @@ contract ReferralsModuleTest is Test, HubStorageWrites {
         assertEq(isClaimed2, false);
         assertTrue(account2.code.length > 0);
 
-        assertEq(IHub(HUB).balanceOf(address(invitationModule), uint256(uint160(originInviter))), 0);
-        assertEq(IHub(HUB).balanceOf(address(invitationModule), uint256(uint160(proxyInviter))), 0);
-        assertEq(IHub(HUB).balanceOf(address(referralsModule), uint256(uint160(originInviter))), 0);
-        assertEq(IHub(HUB).balanceOf(address(referralsModule), uint256(uint160(proxyInviter))), 0);
-        assertEq(IHub(HUB).balanceOf(account1, uint256(uint160(account1))), 48 ether);
-        assertEq(IHub(HUB).balanceOf(account2, uint256(uint160(account2))), 48 ether);
+        assertEq(HUB_V2.balanceOf(address(invitationModule), uint256(uint160(originInviter))), 0);
+        assertEq(HUB_V2.balanceOf(address(invitationModule), uint256(uint160(proxyInviter))), 0);
+        assertEq(HUB_V2.balanceOf(address(referralsModule), uint256(uint160(originInviter))), 0);
+        assertEq(HUB_V2.balanceOf(address(referralsModule), uint256(uint160(proxyInviter))), 0);
+        assertEq(HUB_V2.balanceOf(account1, uint256(uint160(account1))), 48 ether);
+        assertEq(HUB_V2.balanceOf(account2, uint256(uint160(account2))), 48 ether);
 
         _setCRCBalance(uint256(uint160(originInviter)), originInviter, day, uint192(96 ether));
         _setCRCBalance(uint256(uint160(proxyInviter)), originInviter, day, uint192(96 ether));
@@ -226,7 +218,7 @@ contract ReferralsModuleTest is Test, HubStorageWrites {
                 abi.encodePacked(ReferralsModuleTest.SignerAlreadyUsed.selector)
             )
         );
-        IHub(HUB).safeBatchTransferFrom(originInviter, address(invitationModule), ids, values, data);
+        HUB_V2.safeBatchTransferFrom(originInviter, address(invitationModule), ids, values, data);
 
         vm.stopPrank();
     }
@@ -267,9 +259,9 @@ contract ReferralsModuleTest is Test, HubStorageWrites {
 
         (address account,) = referralsModule.accounts(signer1);
 
-        assertTrue(IHub(HUB).isHuman(account));
-        assertEq(IHub(HUB).balanceOf(account, uint256(uint160(account))), 48 ether);
-        assertEq(INameRegistry(NAME_REGISTRY).avatarToMetaDataDigest(account), metadataDigest);
+        assertTrue(HUB_V2.isHuman(account));
+        assertEq(HUB_V2.balanceOf(account, uint256(uint160(account))), 48 ether);
+        assertEq(NAME_REGISTRY.avatarToMetaDataDigest(account), metadataDigest);
         assertFalse(ISafe(account).isModuleEnabled(address(referralsModule)));
 
         bytes memory passkey = abi.encode(x1, y1, verifier);
@@ -308,9 +300,9 @@ contract ReferralsModuleTest is Test, HubStorageWrites {
 
         (account,) = referralsModule.accounts(signer2);
 
-        assertTrue(IHub(HUB).isHuman(account));
-        assertEq(IHub(HUB).balanceOf(account, uint256(uint160(account))), 48 ether);
-        assertEq(INameRegistry(NAME_REGISTRY).avatarToMetaDataDigest(account), metadataDigest);
+        assertTrue(HUB_V2.isHuman(account));
+        assertEq(HUB_V2.balanceOf(account, uint256(uint160(account))), 48 ether);
+        assertEq(NAME_REGISTRY.avatarToMetaDataDigest(account), metadataDigest);
         assertFalse(ISafe(account).isModuleEnabled(address(referralsModule)));
 
         passkey = abi.encode(x2, y2, verifier);
@@ -330,6 +322,9 @@ contract ReferralsModuleTest is Test, HubStorageWrites {
         bytes memory signature = abi.encodePacked(r, s, v);
 
         address affiliateGroup = 0xC19BC204eb1c1D5B3FE500E5E5dfaBaB625F286c; // Gnosis group
+        vm.prank(affiliateGroup);
+        HUB_V2.registerGroup(makeAddr("mint"), "test-group", "GRP", "");
+
         referralsModule.claimAccount(x1, y1, verifier, signature, metadataDigest, affiliateGroup);
 
         (address account,) = referralsModule.accounts(signer1);
@@ -358,7 +353,7 @@ contract ReferralsModuleTest is Test, HubStorageWrites {
             values[i] = 96 ether;
         }
 
-        IHub(HUB).safeBatchTransferFrom(originInviter, address(invitationModule), ids, values, data);
+        HUB_V2.safeBatchTransferFrom(originInviter, address(invitationModule), ids, values, data);
 
         vm.stopPrank();
     }

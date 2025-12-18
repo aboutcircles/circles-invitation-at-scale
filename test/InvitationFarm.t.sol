@@ -7,8 +7,9 @@ import {InvitationFarm} from "src/InvitationFarm.sol";
 import {InvitationModule} from "src/InvitationModule.sol";
 import {IModuleManager} from "src/interfaces/IModuleManager.sol";
 import {IHub} from "src/interfaces/IHub.sol";
+import {CirclesV2Setup} from "test/helpers/CirclesV2Setup.sol";
 
-contract InvitationFarmTest is Test, HubStorageWrites {
+contract InvitationFarmTest is CirclesV2Setup, HubStorageWrites {
     uint64 public day;
 
     uint256 internal gnosisFork;
@@ -16,26 +17,26 @@ contract InvitationFarmTest is Test, HubStorageWrites {
     InvitationModule public invitationModule;
     InvitationFarm public invitationFarm;
 
-    address farmAdmin = 0x37E17D136BdAc822cEc2cF854de1EFC6E5699c87;
-    address farmMaintainer = 0x7b127847f7C5C7dbCA3Cb9c101033791aeDB2B10;
-    address seeder = 0x3F8eD746602DEb687b2aD824E65Eaff132123Cc4;
-    address originInviter = 0x68e3c2aa468D9a80A8d9Bb8fC53bf072FE98B83a;
+    address farmAdmin = makeAddr("farmAdmin");
+    address farmMaintainer = makeAddr("farmMaintainer");
+    address seeder = makeAddr("seeder");
+    address originInviter = makeAddr("originInviter");
     address[] public invitees = [
-        address(0xeA90D70a428500B5cA85DCa9792A52a3b852D307),
-        0x582f688fAb9BE0053B365556981dEBA8Ba7D4280,
-        0x88A42A07A57C47bff00F7c9a23e3a0989A39a5ec,
-        0x4246FB4b64Edd3621897008724Ff6df5bf0F3931,
-        0xd94Ca9fEb6194F1f65e15a06dE0c2030B2584b3D,
-        0x507235c7F41C6164be26472e5cD881436dd0Ce90,
-        0x854E9F40a69b74E70cc6eDF0a80cD8511b6136a9,
-        0xc7f261Eb23eb9f90257A319780D5c82b768d5a8f,
-        0x5d9C264d756c8Ed181dBC10283AE7E98529678c8,
-        0x46CA507f05F537537826e756F1c9fA574DAd6A82
+        makeAddr("invitee1"),
+        makeAddr("invitee2"),
+        makeAddr("invitee3"),
+        makeAddr("invitee4"),
+        makeAddr("invitee5"),
+        makeAddr("invitee6"),
+        makeAddr("invitee7"),
+        makeAddr("invitee8"),
+        makeAddr("invitee9"),
+        makeAddr("invitee10")
     ];
 
-    function setUp() public {
-        gnosisFork = vm.createFork(vm.envString("GNOSIS_RPC"));
-        vm.selectFork(gnosisFork);
+    function setUp() public override {
+        super.setUp();
+        vm.warp(INVITATION_ONLY_TIME + 1);
         // deploy contracts
         invitationModule = new InvitationModule();
         vm.prank(farmAdmin);
@@ -88,8 +89,9 @@ contract InvitationFarmTest is Test, HubStorageWrites {
         values[7] = 96 ether;
         values[8] = 96 ether;
         values[9] = 96 ether;
-        bytes memory data =
-            abi.encode(address(invitationFarm), abi.encodeWithSelector(InvitationFarm.createBots.selector, uint256(10)));
+        bytes memory data = abi.encode(
+            address(invitationFarm), abi.encodeWithSelector(InvitationFarm.createBots.selector, uint256(10))
+        );
 
         vm.prank(seeder);
         IHub(HUB).safeBatchTransferFrom(seeder, address(invitationModule), ids, values, data);

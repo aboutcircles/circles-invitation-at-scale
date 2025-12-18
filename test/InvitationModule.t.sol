@@ -4,61 +4,48 @@ pragma solidity ^0.8.28;
 import {Test, console} from "forge-std/Test.sol";
 import {HubStorageWrites} from "test/helpers/HubStorageWrites.sol";
 import {IModuleManager} from "src/interfaces/IModuleManager.sol";
-import {IHub} from "src/interfaces/IHub.sol";
+import {IHub} from "test/helpers/CirclesV2Setup.sol";
 import {InvitationModule} from "src/InvitationModule.sol";
+import {GenericCallProxy} from "src/GenericCallProxy.sol";
+import {CirclesV2Setup} from "test/helpers/CirclesV2Setup.sol";
+import {FakeSafeAlwaysTrue, FakeSafeAlwaysFalse} from "test/helpers/FakeSafe.sol";
 
 /**
  * @title InvitationModuleTest
  * @notice Test suite for the InvitationModule contract.
  * @dev This contract tests the functionality of the InvitationModule, including direct and proxy invitations,
  * as well as batch invitations. It uses a forked Gnosis chain environment to simulate real-world conditions.
- * Uncovered branch
- * 1. Branch 0 (path: 0) - Lines 97-102 in the nonReentrant modifier.
- * 2. Branch 5 (path: 0) - Line 199-200 in enforceTrust function.
- * 3. Branch 7 (path: 0) - Line 224-225 in enforceHumanRegistered function.
- * 4. Branch 8 (path: 0) - Lines 253-258.
  */
-contract InvitationModuleTest is Test, HubStorageWrites {
+
+contract InvitationModuleTest is CirclesV2Setup, HubStorageWrites {
     /// @notice The current day, calculated from the block timestamp.
     uint64 public day;
-    /// @notice The fork identifier for the Gnosis chain fork.
-    uint256 internal gnosisFork;
 
     /// @notice An instance of the InvitationModule contract.
     InvitationModule public invitationModule;
 
-    /// @notice Error thrown when the invitation fee is not exactly 96 CRC.
-    error NotExactInvitationFee();
-    /// @notice Error thrown when the data encoding for an invitation is invalid.
-    error InvalidEncoding();
-    /// @notice Error thrown when a non-human attempts to send an invitation.
-    error HumanValidationFailed(address avatar);
-    /// @notice Error thrown when a required trust relationship is missing.
-    error TrustRequired(address truster, address trustee);
-    /// @notice Error thrown when a required module is not enabled for an avatar.
-    error ModuleNotEnabled(address avatar);
-    /// @notice Error thrown when array lengths mismatch in a batch operation.
-    error ArrayLengthMismatch();
-    /// @notice Error thrown when a batch invitation has too few invitees.
-    error TooFewInvites();
-    /// @notice Error thrown when a function is called by an address other than the Hub.
-    error OnlyHub();
-    /// @notice Error thrown when a human registration fails.
-    error HumanRegistrationFailed(address invitee);
-    /// @notice Error thrown when an invitee is already registered as a human.
-    error InviteeAlreadyRegistered(address invitee);
-
-    /// @notice Event emitted when a new human is registered.
-    event RegisterHuman(address indexed human, address indexed originInviter, address indexed proxyInviter);
+    /// @notice Error that signals a reentrancy attempt during invitation processing.
+    error Reentrancy();
 
     /// @notice The address of the original inviter.
-    address originInviter = 0x68e3c2aa468D9a80A8d9Bb8fC53bf072FE98B83a;
+    address originInviter;
     /// @notice The address of the proxy inviter.
-    address proxyInviter = 0x3A63F544918051f9285cf97008705790FD280012;
+    address proxyInviter;
     /// @notice The address of the first invitee.
-    address invitee1 = 0xFaC83AAc88D48e76C38A2Db49004e6DCfF530e66;
+    address invitee1;
     /// @notice The address of the second invitee.
-    address invitee2 = 0x5222D426102052983152dD4b19668f1ddD139E48;
+    address invitee2;
+    /// @notice The address of the third invitee.
+    address invitee3;
+
+    /// @notice The address for the fake contract that mimics an inviter but doesn't have Safe functionalities.
+    address fakeInviterSafe;
+    /// @notice The address for the fake contract that mimics a proxy inviter but doesn't have Safe functionalities.
+    address fakeProxyInviterSafe;
+    /// @notice The address for the fake contract that mimics an invitee but doesn't have Safe functionalities.
+    address fakeInvitee;
+    /// @notice The address for the fake contract that always returns false for Safe checks.
+    address fakeSafe;
 
     /**
      * @notice Sets up the test environment before each test case.
@@ -66,14 +53,23 @@ contract InvitationModuleTest is Test, HubStorageWrites {
      * sets up test accounts (origin inviter, proxy inviter, and invitees), and enables the
      * InvitationModule for these accounts.
      */
-    function setUp() public {
-        gnosisFork = vm.createFork(vm.envString("GNOSIS_RPC"));
-        vm.selectFork(gnosisFork);
+    function setUp() public override {
+        super.setUp();
+        vm.warp(INVITATION_ONLY_TIME + 1);
+        // set current day
+        day = HUB_V2.day(block.timestamp);
 
         invitationModule = new InvitationModule();
+        fakeInviterSafe = address(new FakeSafeAlwaysTrue());
+        fakeProxyInviterSafe = address(new FakeSafeAlwaysTrue());
+        fakeInvitee = address(new FakeSafeAlwaysTrue());
+        fakeSafe = address(new FakeSafeAlwaysFalse());
+        originInviter = makeAddr("originInviter");
+        proxyInviter = makeAddr("proxyInviter");
+        invitee1 = makeAddr("invitee1");
+        invitee2 = makeAddr("invitee2");
+        invitee3 = makeAddr("invited3");
 
-        // set current day
-        day = IHub(HUB).day(block.timestamp);
         // create test human accounts as safes
         // proxy
         _registerHuman(proxyInviter);
@@ -88,6 +84,13 @@ contract InvitationModuleTest is Test, HubStorageWrites {
         // make invitees a safe
         _simulateSafe(invitee1);
         _simulateSafe(invitee2);
+        _simulateSafe(invitee3);
+
+        _registerHuman(address(fakeInviterSafe));
+        _setCRCBalance(uint256(uint160(address(fakeInviterSafe))), address(fakeInviterSafe), day, uint192(96 ether));
+
+        _registerHuman(fakeProxyInviterSafe);
+        _setCRCBalance(uint256(uint160(address(fakeProxyInviterSafe))), fakeInviterSafe, day, uint192(96 ether));
 
         // enable invitation module for actors
         vm.prank(proxyInviter);
@@ -98,6 +101,8 @@ contract InvitationModuleTest is Test, HubStorageWrites {
         IModuleManager(invitee1).enableModule(address(invitationModule));
         vm.prank(invitee2);
         IModuleManager(invitee2).enableModule(address(invitationModule));
+        vm.prank(invitee3);
+        IModuleManager(invitee3).enableModule(address(invitationModule));
     }
 
     /**
@@ -113,8 +118,8 @@ contract InvitationModuleTest is Test, HubStorageWrites {
         {
             // Revert: Value less than 96 CRC
             vm.prank(originInviter);
-            vm.expectRevert(abi.encodeWithSelector(InvitationModuleTest.NotExactInvitationFee.selector, ""));
-            IHub(HUB).safeTransferFrom(
+            vm.expectRevert(abi.encodeWithSelector(InvitationModule.NotExactInvitationFee.selector, ""));
+            HUB_V2.safeTransferFrom(
                 originInviter,
                 address(invitationModule),
                 uint256(uint160(originInviter)),
@@ -125,23 +130,24 @@ contract InvitationModuleTest is Test, HubStorageWrites {
         {
             // Revert: Data don't encode invitee address
             vm.prank(originInviter);
-            vm.expectRevert(abi.encodeWithSelector(InvitationModuleTest.InvalidEncoding.selector, ""));
-            IHub(HUB).safeTransferFrom(
+            vm.expectRevert(abi.encodeWithSelector(InvitationModule.InvalidEncoding.selector, ""));
+            HUB_V2.safeTransferFrom(
                 originInviter, address(invitationModule), uint256(uint160(originInviter)), 96 ether, bytes("")
             );
         }
+
         {
             // Revert: Non human can't invite
             address nonHuman = makeAddr("nonHuman");
-            vm.assume(IHub(HUB).isHuman(nonHuman) == false);
+            vm.assume(HUB_V2.isHuman(nonHuman) == false);
             _simulateSafe(nonHuman);
             _setCRCBalance(uint256(uint160(nonHuman)), nonHuman, day, uint192(96 ether));
             vm.prank(nonHuman);
             IModuleManager(nonHuman).enableModule(address(invitationModule));
 
             vm.prank(nonHuman);
-            vm.expectRevert(abi.encodeWithSelector(InvitationModuleTest.HumanValidationFailed.selector, nonHuman));
-            IHub(HUB).safeTransferFrom(
+            vm.expectRevert(abi.encodeWithSelector(InvitationModule.HumanValidationFailed.selector, nonHuman));
+            HUB_V2.safeTransferFrom(
                 nonHuman, address(invitationModule), uint256(uint160(nonHuman)), 96 ether, abi.encode(invitee1)
             );
         }
@@ -150,8 +156,8 @@ contract InvitationModuleTest is Test, HubStorageWrites {
         if (isModuleEnabled) {
             vm.prank(originInviter);
             vm.expectEmit(address(invitationModule));
-            emit RegisterHuman(invitee1, originInviter, originInviter);
-            IHub(HUB).safeTransferFrom(
+            emit InvitationModule.RegisterHuman(invitee1, originInviter, originInviter);
+            HUB_V2.safeTransferFrom(
                 originInviter,
                 address(invitationModule),
                 uint256(uint160(originInviter)),
@@ -159,25 +165,72 @@ contract InvitationModuleTest is Test, HubStorageWrites {
                 abi.encode(invitee1)
             );
 
-            assertTrue(IHub(HUB).isHuman(invitee1));
-            assertEq(IHub(HUB).balanceOf(originInviter, uint256(uint160(originInviter))), 0); // originInviter's 96 CRC is burnt
-            assertEq(IHub(HUB).balanceOf(invitee1, uint256(uint160(invitee1))), 48 ether); // invitee1 gets invitaiton bonus of own CRC
-            assertTrue(IHub(HUB).isTrusted(originInviter, invitee1)); //  oriignInviter now trust invitee1
-            assertEq(IHub(HUB).balanceOf(address(invitationModule), uint256(uint160(originInviter))), 0); // invitationModule don't hold anything.
+            assertTrue(HUB_V2.isHuman(invitee1));
+            assertEq(HUB_V2.balanceOf(originInviter, uint256(uint160(originInviter))), 0); // originInviter's 96 CRC is burnt
+            assertEq(HUB_V2.balanceOf(invitee1, uint256(uint160(invitee1))), 48 ether); // invitee1 gets invitaiton bonus of own CRC
+            (, uint256 expiry) = HUB_V2.trustMarkers(originInviter, invitee1);
+            assertTrue(expiry == type(uint96).max);
+            //assertTrue(HUB_V2.isTrusted(originInviter, invitee1)); //  originInviter now trust invitee1
+            assertEq(HUB_V2.balanceOf(address(invitationModule), uint256(uint160(originInviter))), 0); // invitationModule don't hold anything.
 
             // Should revert if trying to invite again
             _setCRCBalance(uint256(uint160(originInviter)), originInviter, day, uint192(96 ether));
 
             vm.prank(originInviter);
-            vm.expectRevert(abi.encodeWithSelector(InvitationModuleTest.InviteeAlreadyRegistered.selector, invitee1));
-            IHub(HUB).safeTransferFrom(
+            vm.expectRevert(abi.encodeWithSelector(InvitationModule.InviteeAlreadyRegistered.selector, invitee1));
+            HUB_V2.safeTransferFrom(
                 originInviter,
                 address(invitationModule),
                 uint256(uint160(originInviter)),
                 96 ether,
                 abi.encode(invitee1)
             );
-            // Note: testing case 2 is trivial as InvitationModule will call `enforceTrust` to set trust to invitee1 anyway
+
+            // Case 2
+
+            _setTrust(originInviter, invitee2);
+
+            vm.prank(originInviter);
+
+            HUB_V2.safeTransferFrom(
+                originInviter,
+                address(invitationModule),
+                uint256(uint160(originInviter)),
+                96 ether,
+                abi.encode(invitee2)
+            );
+            assertTrue(HUB_V2.isHuman(invitee2));
+
+            // let's use fakeInviterSafe, which will fail in enforceTrust as trust function is not called
+
+            vm.prank(fakeInviterSafe);
+            vm.expectRevert(
+                abi.encodeWithSelector(InvitationModule.TrustEnforcementFailed.selector, fakeInviterSafe, invitee3)
+            );
+            HUB_V2.safeTransferFrom(
+                fakeInviterSafe,
+                address(invitationModule),
+                uint256(uint160(fakeInviterSafe)),
+                96 ether,
+                abi.encode(invitee3)
+            );
+
+            // Should success even though trust is not called through _callHubFromSafe, but inviter already trusted invitee3
+            _setTrust(fakeInviterSafe, invitee3);
+            vm.prank(fakeInviterSafe);
+            HUB_V2.safeTransferFrom(
+                fakeInviterSafe,
+                address(invitationModule),
+                uint256(uint160(fakeInviterSafe)),
+                96 ether,
+                abi.encode(invitee3)
+            );
+            assertTrue(HUB_V2.isHuman(invitee3));
+            assertEq(HUB_V2.balanceOf(fakeInviterSafe, uint256(uint160(fakeInviterSafe))), 0); // fakeInviterSafe's 96 CRC is burnt
+            assertEq(HUB_V2.balanceOf(invitee3, uint256(uint160(invitee3))), 48 ether); // invitee3 gets invitaiton bonus of own CRC
+            (, uint256 invitee3Expiry) = HUB_V2.trustMarkers(fakeInviterSafe, invitee3);
+            assertTrue(invitee3Expiry == type(uint96).max);
+            assertEq(HUB_V2.balanceOf(address(invitationModule), uint256(uint160(fakeInviterSafe))), 0); // invitationModule don't hold anything.
         } else {
             // Case 4: OriginInviter don't have invitation module disabled  && don't trust invitee1 -> revert
 
@@ -186,10 +239,8 @@ contract InvitationModuleTest is Test, HubStorageWrites {
 
             // originInviter don't trust invitee yet, revert
             vm.prank(originInviter);
-            vm.expectRevert(
-                abi.encodeWithSelector(InvitationModuleTest.TrustRequired.selector, originInviter, invitee1)
-            );
-            IHub(HUB).safeTransferFrom(
+            vm.expectRevert(abi.encodeWithSelector(InvitationModule.TrustRequired.selector, originInviter, invitee1));
+            HUB_V2.safeTransferFrom(
                 originInviter,
                 address(invitationModule),
                 uint256(uint160(originInviter)),
@@ -202,7 +253,7 @@ contract InvitationModuleTest is Test, HubStorageWrites {
 
             // Case 3: OriginInviter don't have invitation module enabled, but trust invitee1 -> valid
             vm.prank(originInviter);
-            IHub(HUB).safeTransferFrom(
+            HUB_V2.safeTransferFrom(
                 originInviter,
                 address(invitationModule),
                 uint256(uint160(originInviter)),
@@ -210,11 +261,12 @@ contract InvitationModuleTest is Test, HubStorageWrites {
                 abi.encode(invitee1)
             );
 
-            assertTrue(IHub(HUB).isHuman(invitee1));
-            assertEq(IHub(HUB).balanceOf(originInviter, uint256(uint160(originInviter))), 0); // originInviter's 96 CRC is burnt
-            assertEq(IHub(HUB).balanceOf(invitee1, uint256(uint160(invitee1))), 48 ether); // invitee1 gets invitaiton bonus of own CRC
-            assertTrue(IHub(HUB).isTrusted(originInviter, invitee1));
-            assertEq(IHub(HUB).balanceOf(address(invitationModule), uint256(uint160(originInviter))), 0); // invitationModule don't hold anything.
+            assertTrue(HUB_V2.isHuman(invitee1));
+            assertEq(HUB_V2.balanceOf(originInviter, uint256(uint160(originInviter))), 0); // originInviter's 96 CRC is burnt
+            assertEq(HUB_V2.balanceOf(invitee1, uint256(uint160(invitee1))), 48 ether); // invitee1 gets invitaiton bonus of own CRC
+            (, uint256 expiry) = HUB_V2.trustMarkers(originInviter, invitee1);
+            assertTrue(expiry == type(uint96).max);
+            assertEq(HUB_V2.balanceOf(address(invitationModule), uint256(uint160(originInviter))), 0); // invitationModule don't hold anything.
         }
     }
 
@@ -227,33 +279,55 @@ contract InvitationModuleTest is Test, HubStorageWrites {
      * 3. Origin inviter has the module enabled, but the proxy inviter does not (should revert).
      */
     function testProxyInvite(bool isModuleEnabled) public {
-        // Revert: proxyInviter don't trust originInviter
-        vm.prank(originInviter);
+        {
+            // Revert Human Enforcement Failed
 
-        vm.expectRevert(
-            abi.encodeWithSelector(InvitationModuleTest.TrustRequired.selector, proxyInviter, originInviter)
-        );
-        IHub(HUB).safeTransferFrom(
-            originInviter, address(invitationModule), uint256(uint160(proxyInviter)), 96 ether, abi.encode(invitee1)
-        );
-        _setTrust(proxyInviter, originInviter);
+            _setTrust(fakeProxyInviterSafe, fakeInviterSafe);
+            _setTrust(fakeProxyInviterSafe, fakeInvitee); // To pass enforceTrust check
+
+            vm.prank(fakeInviterSafe);
+
+            vm.expectRevert(abi.encodeWithSelector(InvitationModule.HumanRegistrationFailed.selector, fakeInvitee));
+            HUB_V2.safeTransferFrom(
+                fakeInviterSafe,
+                address(invitationModule),
+                uint256(uint160(fakeProxyInviterSafe)),
+                96 ether,
+                abi.encode(fakeInvitee)
+            );
+        }
+        {
+            // Revert: proxyInviter don't trust originInviter
+            vm.prank(originInviter);
+
+            vm.expectRevert(
+                abi.encodeWithSelector(InvitationModule.TrustRequired.selector, proxyInviter, originInviter)
+            );
+            HUB_V2.safeTransferFrom(
+                originInviter, address(invitationModule), uint256(uint160(proxyInviter)), 96 ether, abi.encode(invitee1)
+            );
+            _setTrust(proxyInviter, originInviter);
+        }
 
         if (isModuleEnabled) {
             // Case 1: originInviter and proxyInviter has module enabled -> valid
             vm.prank(originInviter);
-            IHub(HUB).safeTransferFrom(
+            HUB_V2.safeTransferFrom(
                 originInviter, address(invitationModule), uint256(uint160(proxyInviter)), 96 ether, abi.encode(invitee1)
             );
-            assertTrue(IHub(HUB).isHuman(invitee1));
-            assertEq(IHub(HUB).balanceOf(originInviter, uint256(uint160(originInviter))), 96 ether); // originInviter's 96 CRC remains
-            assertEq(IHub(HUB).balanceOf(proxyInviter, uint256(uint160(proxyInviter))), 0); // proxyInviter's 96 CRC is burnt
-            assertEq(IHub(HUB).balanceOf(invitee1, uint256(uint160(invitee1))), 48 ether); // invitee1 gets invitaiton bonus of own CRC
-            assertTrue(IHub(HUB).isTrusted(originInviter, invitee1)); //  originInviter now trust invitee1
-            assertTrue(IHub(HUB).isTrusted(proxyInviter, invitee1)); // proxyInviter also trust invitee1 for 1 block
-            assertEq(IHub(HUB).balanceOf(address(invitationModule), uint256(uint160(originInviter))), 0); // invitationModule don't hold anything.
+            assertTrue(HUB_V2.isHuman(invitee1));
+            assertEq(HUB_V2.balanceOf(originInviter, uint256(uint160(originInviter))), 96 ether); // originInviter's 96 CRC remains
+            assertEq(HUB_V2.balanceOf(proxyInviter, uint256(uint160(proxyInviter))), 0); // proxyInviter's 96 CRC is burnt
+            assertEq(HUB_V2.balanceOf(invitee1, uint256(uint160(invitee1))), 48 ether); // invitee1 gets invitaiton bonus of own CRC
+            (, uint256 expiryOrigin) = HUB_V2.trustMarkers(originInviter, invitee1);
+            assertTrue(expiryOrigin == type(uint96).max);
+            (, uint256 expiryProxy) = HUB_V2.trustMarkers(proxyInviter, invitee1);
+            assertTrue(expiryProxy == block.timestamp);
+
+            assertEq(HUB_V2.balanceOf(address(invitationModule), uint256(uint160(originInviter))), 0); // invitationModule don't hold anything.
 
             vm.warp(block.timestamp + 1);
-            assertFalse(IHub(HUB).isTrusted(proxyInviter, invitee1)); // proxyInviter don't trust invitee1 after 1 block
+            assertFalse(HUB_V2.isTrusted(proxyInviter, invitee1)); // proxyInviter don't trust invitee1 after 1 block
             return;
         } else {
             vm.prank(originInviter);
@@ -264,8 +338,8 @@ contract InvitationModuleTest is Test, HubStorageWrites {
 
             // Case 2: originInviter && proxyInviter don't have module enabled
             vm.prank(originInviter);
-            vm.expectRevert(abi.encodeWithSelector(InvitationModuleTest.ModuleNotEnabled.selector, originInviter));
-            IHub(HUB).safeTransferFrom(
+            vm.expectRevert(abi.encodeWithSelector(InvitationModule.ModuleNotEnabled.selector, originInviter));
+            HUB_V2.safeTransferFrom(
                 originInviter, address(invitationModule), uint256(uint160(proxyInviter)), 96 ether, abi.encode(invitee1)
             );
 
@@ -274,20 +348,20 @@ contract InvitationModuleTest is Test, HubStorageWrites {
 
             // Case 3: originInviter have invitationModule &&  proxyInviter don't have invitationModule enabled
             vm.prank(originInviter);
-            vm.expectRevert(abi.encodeWithSelector(InvitationModuleTest.ModuleNotEnabled.selector, proxyInviter));
-            IHub(HUB).safeTransferFrom(
+            vm.expectRevert(abi.encodeWithSelector(InvitationModule.ModuleNotEnabled.selector, proxyInviter));
+            HUB_V2.safeTransferFrom(
                 originInviter, address(invitationModule), uint256(uint160(proxyInviter)), 96 ether, abi.encode(invitee1)
             );
 
             vm.prank(proxyInviter);
             IModuleManager(proxyInviter).enableModule(address(invitationModule));
 
-            // Both originInviter && proxyInviter have invitationModule enabled -> fallbacl to case 1 -> valid
+            // Both originInviter && proxyInviter have invitationModule enabled -> fallback to case 1 -> valid
             vm.prank(originInviter);
-            IHub(HUB).safeTransferFrom(
+            HUB_V2.safeTransferFrom(
                 originInviter, address(invitationModule), uint256(uint160(proxyInviter)), 96 ether, abi.encode(invitee1)
             );
-            assertTrue(IHub(HUB).isHuman(invitee1));
+            assertTrue(HUB_V2.isHuman(invitee1));
             return;
         }
     }
@@ -321,8 +395,8 @@ contract InvitationModuleTest is Test, HubStorageWrites {
 
             // Revert: Not enough CRC for invitation
             vm.prank(originInviter);
-            vm.expectRevert(abi.encodeWithSelector(InvitationModuleTest.NotExactInvitationFee.selector));
-            IHub(HUB).safeBatchTransferFrom(originInviter, address(invitationModule), ids, values, abi.encode(invitees));
+            vm.expectRevert(abi.encodeWithSelector(InvitationModule.NotExactInvitationFee.selector));
+            HUB_V2.safeBatchTransferFrom(originInviter, address(invitationModule), ids, values, abi.encode(invitees));
 
             values[1] = 96 ether;
 
@@ -333,20 +407,23 @@ contract InvitationModuleTest is Test, HubStorageWrites {
 
             vm.prank(originInviter);
             vm.expectRevert();
-            IHub(HUB).safeBatchTransferFrom(originInviter, address(invitationModule), ids, values, data);
+            HUB_V2.safeBatchTransferFrom(originInviter, address(invitationModule), ids, values, data);
 
             // Valid case
             vm.prank(originInviter);
-            IHub(HUB).safeBatchTransferFrom(originInviter, address(invitationModule), ids, values, abi.encode(invitees));
+            HUB_V2.safeBatchTransferFrom(originInviter, address(invitationModule), ids, values, abi.encode(invitees));
 
-            assertTrue(IHub(HUB).isHuman(invitee1));
-            assertTrue(IHub(HUB).isHuman(invitee2));
-            assertEq(IHub(HUB).balanceOf(originInviter, uint256(uint160(originInviter))), 0); // originInviter's 192 CRC is burnt
-            assertEq(IHub(HUB).balanceOf(invitee1, uint256(uint160(invitee1))), 48 ether); // invitee1 gets invitaiton bonus of own CRC
-            assertEq(IHub(HUB).balanceOf(invitee2, uint256(uint160(invitee2))), 48 ether); // invitee2 gets invitaiton bonus of own CRC
-            assertTrue(IHub(HUB).isTrusted(originInviter, invitee1));
-            assertTrue(IHub(HUB).isTrusted(originInviter, invitee2));
-            assertEq(IHub(HUB).balanceOf(address(invitationModule), uint256(uint160(originInviter))), 0); // invitationModule don't hold anything.
+            assertTrue(HUB_V2.isHuman(invitee1));
+            assertTrue(HUB_V2.isHuman(invitee2));
+            assertEq(HUB_V2.balanceOf(originInviter, uint256(uint160(originInviter))), 0); // originInviter's 192 CRC is burnt
+            assertEq(HUB_V2.balanceOf(invitee1, uint256(uint160(invitee1))), 48 ether); // invitee1 gets invitaiton bonus of own CRC
+            assertEq(HUB_V2.balanceOf(invitee2, uint256(uint160(invitee2))), 48 ether); // invitee2 gets invitaiton bonus of own CRC
+            (, uint256 expiryOrigin1) = HUB_V2.trustMarkers(originInviter, invitee1);
+            assertTrue(expiryOrigin1 == type(uint96).max);
+            (, uint256 expiryOrigin2) = HUB_V2.trustMarkers(originInviter, invitee2);
+            assertTrue(expiryOrigin2 == type(uint96).max);
+
+            assertEq(HUB_V2.balanceOf(address(invitationModule), uint256(uint160(originInviter))), 0); // invitationModule don't hold anything.
         }
     }
 
@@ -370,22 +447,22 @@ contract InvitationModuleTest is Test, HubStorageWrites {
             ids[1] = uint256(uint160(proxyInviter));
 
             uint256[] memory values = new uint256[](2);
-            values[0] = 92 ether;
-            values[1] = 96 ether; // Not enough CRC
+            values[0] = 92 ether; // Not enough CRC
+            values[1] = 96 ether;
 
             // Revert: Not enough CRC for invitation
             vm.prank(originInviter);
-            vm.expectRevert(abi.encodeWithSelector(InvitationModuleTest.NotExactInvitationFee.selector));
-            IHub(HUB).safeBatchTransferFrom(originInviter, address(invitationModule), ids, values, abi.encode(invitees));
+            vm.expectRevert(abi.encodeWithSelector(InvitationModule.NotExactInvitationFee.selector));
+            HUB_V2.safeBatchTransferFrom(originInviter, address(invitationModule), ids, values, abi.encode(invitees));
 
             values[0] = 96 ether;
 
             // Revert: proxy Inviter don't trust Invitee
             vm.prank(originInviter);
             vm.expectRevert(
-                abi.encodeWithSelector(InvitationModuleTest.TrustRequired.selector, proxyInviter, originInviter)
+                abi.encodeWithSelector(InvitationModule.TrustRequired.selector, proxyInviter, originInviter)
             );
-            IHub(HUB).safeBatchTransferFrom(originInviter, address(invitationModule), ids, values, abi.encode(invitees));
+            HUB_V2.safeBatchTransferFrom(originInviter, address(invitationModule), ids, values, abi.encode(invitees));
 
             _setTrust(proxyInviter, originInviter);
 
@@ -396,26 +473,32 @@ contract InvitationModuleTest is Test, HubStorageWrites {
 
             vm.prank(originInviter);
             vm.expectRevert();
-            IHub(HUB).safeBatchTransferFrom(originInviter, address(invitationModule), ids, values, data);
+            HUB_V2.safeBatchTransferFrom(originInviter, address(invitationModule), ids, values, data);
 
             // Valid case
             vm.prank(originInviter);
-            IHub(HUB).safeBatchTransferFrom(originInviter, address(invitationModule), ids, values, abi.encode(invitees));
+            HUB_V2.safeBatchTransferFrom(originInviter, address(invitationModule), ids, values, abi.encode(invitees));
 
-            assertTrue(IHub(HUB).isHuman(invitee1));
-            assertTrue(IHub(HUB).isHuman(invitee2));
-            assertEq(IHub(HUB).balanceOf(originInviter, uint256(uint160(proxyInviter))), 0); // originInviter's proxyInviter 192 CRC is burnt
-            assertEq(IHub(HUB).balanceOf(invitee1, uint256(uint160(invitee1))), 48 ether); // invitee1 gets invitaiton bonus of own CRC
-            assertEq(IHub(HUB).balanceOf(invitee2, uint256(uint160(invitee2))), 48 ether); // invitee2 gets invitaiton bonus of own CRC
-            assertTrue(IHub(HUB).isTrusted(originInviter, invitee1));
-            assertTrue(IHub(HUB).isTrusted(originInviter, invitee2));
-            assertTrue(IHub(HUB).isTrusted(proxyInviter, invitee1));
-            assertTrue(IHub(HUB).isTrusted(proxyInviter, invitee2));
-            assertEq(IHub(HUB).balanceOf(address(invitationModule), uint256(uint160(originInviter))), 0); // invitationModule don't hold anything.
+            assertTrue(HUB_V2.isHuman(invitee1));
+            assertTrue(HUB_V2.isHuman(invitee2));
+            assertEq(HUB_V2.balanceOf(originInviter, uint256(uint160(proxyInviter))), 0); // originInviter's proxyInviter 192 CRC is burnt
+            assertEq(HUB_V2.balanceOf(invitee1, uint256(uint160(invitee1))), 48 ether); // invitee1 gets invitaiton bonus of own CRC
+            assertEq(HUB_V2.balanceOf(invitee2, uint256(uint160(invitee2))), 48 ether); // invitee2 gets invitaiton bonus of own CRC
+            (, uint256 expiryInvitee1) = HUB_V2.trustMarkers(originInviter, invitee1);
+            assertTrue(expiryInvitee1 == type(uint96).max);
+            (, uint256 expiryInvitee2) = HUB_V2.trustMarkers(originInviter, invitee2);
+            assertTrue(expiryInvitee2 == type(uint96).max);
+
+            (, uint256 expiryProxy1) = HUB_V2.trustMarkers(proxyInviter, invitee1);
+            assertTrue(expiryProxy1 == block.timestamp);
+            (, uint256 expiryProxy2) = HUB_V2.trustMarkers(proxyInviter, invitee2);
+            assertTrue(expiryProxy2 == block.timestamp);
+
+            assertEq(HUB_V2.balanceOf(address(invitationModule), uint256(uint160(originInviter))), 0); // invitationModule don't hold anything.
 
             vm.warp(block.timestamp + 1);
-            assertFalse(IHub(HUB).isTrusted(proxyInviter, invitee1));
-            assertFalse(IHub(HUB).isTrusted(proxyInviter, invitee2));
+            assertFalse(HUB_V2.isTrusted(proxyInviter, invitee1));
+            assertFalse(HUB_V2.isTrusted(proxyInviter, invitee2));
         }
     }
 
@@ -426,7 +509,7 @@ contract InvitationModuleTest is Test, HubStorageWrites {
      */
     function testOnlyHub() public {
         vm.prank(makeAddr("randomAddress"));
-        vm.expectRevert(abi.encodeWithSelector(InvitationModuleTest.OnlyHub.selector));
+        vm.expectRevert(abi.encodeWithSelector(InvitationModule.OnlyHub.selector));
         invitationModule.onERC1155Received(makeAddr("randomAddress"), originInviter, 0, 96 ether, "");
 
         uint256[] memory ids = new uint256[](2);
@@ -436,7 +519,83 @@ contract InvitationModuleTest is Test, HubStorageWrites {
         uint256[] memory values = new uint256[](2);
         values[0] = 96 ether;
         values[1] = 96 ether;
-        vm.expectRevert(abi.encodeWithSelector(InvitationModuleTest.OnlyHub.selector));
+        vm.expectRevert(abi.encodeWithSelector(InvitationModule.OnlyHub.selector));
         invitationModule.onERC1155BatchReceived(makeAddr("randomAddress"), originInviter, ids, values, "");
+    }
+
+    /**
+     * @notice Tests that calling the Hub from a fake Safe (without proper Safe functionality) fails.
+     * @dev This test verifies that when a fake Safe contract (that doesn't implement proper Safe module functionality)
+     * attempts to make a call to the Hub through the InvitationModule, it fails with the expected revert.
+     * The test uses a FakeSafeAlwaysFalse contract that always returns false for Safe execTransactionFromModuleReturnData.
+     */
+    function testCallHubFromSafeFail() public {
+        _registerHuman(fakeSafe);
+        _setCRCBalance(uint256(uint160(address(fakeSafe))), fakeSafe, day, uint192(96 ether));
+        vm.prank(fakeSafe);
+        vm.expectRevert(abi.encodePacked(address(invitationModule))); // revert calldata from fakeSafe, which is the abi.encodePacked(msg.sender)
+        HUB_V2.safeTransferFrom(
+            fakeSafe, address(invitationModule), uint256(uint160(fakeSafe)), 96 ether, abi.encode(invitee1)
+        );
+    }
+
+    /**
+     * @notice Tests reentrancy protection in both single and batch invitation scenarios.
+     * @dev This test verifies that the InvitationModule properly prevents reentrancy attacks
+     * by attempting to call the Hub recursively during the onERC1155Received and
+     * onERC1155BatchReceived callbacks. Both scenarios should revert with a Reentrancy error.
+     * The test covers:
+     * - Single transfer reentrancy attempt via onERC1155Received
+     * - Batch transfer reentrancy attempt via onERC1155BatchReceived
+     */
+    function testReentrancy() public {
+        // Reentrant onERC1155Received
+        // singe Transfer: originInviter need 192 CRC
+        // batch Transfer: f originInviter need 384 CRC
+        _setCRCBalance(uint256(uint160(proxyInviter)), originInviter, day, uint192(384 ether));
+        // Trick to prevent ERC1155MissingApprovalForAll error
+        _setOperatorApproval(originInviter, address(invitationModule.GENERIC_CALL_PROXY()));
+
+        bytes memory reentrantCalldata = abi.encodeCall(
+            IHub.safeTransferFrom,
+            (originInviter, address(invitationModule), uint256(uint160(proxyInviter)), 96 ether, abi.encode(invitee1))
+        );
+        bytes memory fullCalldataWithAddr = abi.encode(HUB, reentrantCalldata);
+        vm.prank(originInviter);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                GenericCallProxy.GenericCallReverted.selector,
+                abi.encodePacked(InvitationModuleTest.Reentrancy.selector)
+            )
+        ); // revert GenericCallReverted(Reentrancy())
+        HUB_V2.safeTransferFrom(
+            originInviter, address(invitationModule), uint256(uint160(proxyInviter)), 96 ether, fullCalldataWithAddr
+        );
+
+        // Reentrant onERC1155BatchReceived
+        address[] memory invitees = new address[](2);
+        invitees[0] = invitee1;
+        invitees[1] = invitee2;
+
+        uint256[] memory ids = new uint256[](2);
+        ids[0] = uint256(uint160(proxyInviter));
+        ids[1] = uint256(uint160(proxyInviter));
+
+        uint256[] memory values = new uint256[](2);
+        values[0] = 96 ether;
+        values[1] = 96 ether;
+
+        reentrantCalldata = abi.encodeCall(
+            IHub.safeBatchTransferFrom, (originInviter, address(invitationModule), ids, values, abi.encode(invitees))
+        );
+        fullCalldataWithAddr = abi.encode(HUB, reentrantCalldata);
+        vm.prank(originInviter);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                GenericCallProxy.GenericCallReverted.selector,
+                abi.encodePacked(InvitationModuleTest.Reentrancy.selector)
+            )
+        ); // revert GenericCallReverted(Reentrancy())
+        HUB_V2.safeBatchTransferFrom(originInviter, address(invitationModule), ids, values, fullCalldataWithAddr);
     }
 }
