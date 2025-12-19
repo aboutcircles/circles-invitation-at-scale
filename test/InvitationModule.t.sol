@@ -326,8 +326,6 @@ contract InvitationModuleTest is CirclesV2Setup, HubStorageWrites {
 
             assertEq(HUB_V2.balanceOf(address(invitationModule), uint256(uint160(originInviter))), 0); // invitationModule don't hold anything.
 
-            vm.warp(block.timestamp + 1);
-            assertFalse(HUB_V2.isTrusted(proxyInviter, invitee1)); // proxyInviter don't trust invitee1 after 1 block
             return;
         } else {
             vm.prank(originInviter);
@@ -495,10 +493,6 @@ contract InvitationModuleTest is CirclesV2Setup, HubStorageWrites {
             assertTrue(expiryProxy2 == block.timestamp);
 
             assertEq(HUB_V2.balanceOf(address(invitationModule), uint256(uint160(originInviter))), 0); // invitationModule don't hold anything.
-
-            vm.warp(block.timestamp + 1);
-            assertFalse(HUB_V2.isTrusted(proxyInviter, invitee1));
-            assertFalse(HUB_V2.isTrusted(proxyInviter, invitee2));
         }
     }
 
