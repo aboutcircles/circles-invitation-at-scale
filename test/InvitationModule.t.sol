@@ -7,8 +7,16 @@ import {IModuleManager} from "src/interfaces/IModuleManager.sol";
 import {IHub} from "test/helpers/CirclesV2Setup.sol";
 import {InvitationModule} from "src/InvitationModule.sol";
 import {GenericCallProxy} from "src/GenericCallProxy.sol";
-import {CirclesV2Setup} from "test/helpers/CirclesV2Setup.sol";
-import {FakeSafeAlwaysTrue, FakeSafeAlwaysFalse} from "test/helpers/FakeSafe.sol";
+import {CirclesV2Setup, TypeDefinitions} from "test/helpers/CirclesV2Setup.sol";
+import {
+    FakeSafeAlwaysTrue,
+    FakeSafeAlwaysFalse,
+    FakeSafeGroup,
+    Scammer,
+    FakeTreasury,
+    FakeMintPolicy
+} from "test/helpers/FakeSafe.sol";
+import {InvitationModuleNoValidateHuman} from "test/helpers/InvitationModuleNoValidateHuman.sol";
 
 /**
  * @title InvitationModuleTest
@@ -591,5 +599,201 @@ contract InvitationModuleTest is CirclesV2Setup, HubStorageWrites {
             )
         ); // revert GenericCallReverted(Reentrancy())
         HUB_V2.safeBatchTransferFrom(originInviter, address(invitationModule), ids, values, fullCalldataWithAddr);
+    }
+
+    // To demonstrate that without human validation, inviter can result in trusting malicious group and drain personal CRC by the scammer
+    function testDrainCRCFromInviter() public {
+        // 1. inviter trust invitee (a fake group) in through InvitationModule.onERC1155Received call
+        // 2. invitee register itself as group
+        // 2. invitee call groupMint while the collateral is sent to scammer account continuously
+        // 3. scammer hold a huge amount of fake group token, which inviter trust
+        // 4. through opreateFlowMatrix, scammer drain all the inviter's token since inviter trust invitee(fake group)
+
+        Scammer scammer = new Scammer();
+        FakeMintPolicy fakeMintPolicy = new FakeMintPolicy();
+        FakeTreasury fakeTreasury = new FakeTreasury(address(scammer));
+        FakeSafeGroup fakeGroup = new FakeSafeGroup(address(scammer), address(fakeTreasury), address(fakeMintPolicy));
+        uint192 scammerInitialCRCAmount = uint192(1 ether);
+        _registerHuman(address(scammer));
+        _setCRCBalance(uint256(uint160(address(scammer))), address(scammer), day, scammerInitialCRCAmount);
+        {
+            scammer.trustExternal(address(originInviter));
+            vm.prank(address(scammer));
+            HUB_V2.setApprovalForAll(address(scammer), true); // To prevent errror from isApprovedForAll(scammer, scammer) = false
+
+            // The original InvitationModule will not success
+            vm.prank(originInviter);
+            vm.expectRevert(
+                abi.encodeWithSelector(InvitationModule.HumanRegistrationFailed.selector, address(fakeGroup))
+            );
+            HUB_V2.safeTransferFrom(
+                originInviter,
+                address(invitationModule),
+                uint256(uint160(originInviter)),
+                96 ether,
+                abi.encode(address(fakeGroup))
+            );
+
+            // Let's create a new InvitationModule that don't check if the invitee is registered as human after onERC1155Received is called
+            InvitationModuleNoValidateHuman invitationModuleNoValidateHuman = new InvitationModuleNoValidateHuman();
+
+            vm.prank(originInviter);
+            IModuleManager(originInviter).enableModule(address(invitationModuleNoValidateHuman));
+            vm.prank(originInviter);
+            // Make originInviter invites fakeGroup as invitee
+            HUB_V2.safeTransferFrom(
+                originInviter,
+                address(invitationModuleNoValidateHuman),
+                uint256(uint160(originInviter)),
+                96 ether,
+                abi.encode(address(fakeGroup))
+            );
+
+            // Make scammer abuse group treasury and hold as many group CRC as it wants, which is trusted by originInviter
+            uint256 loopAmt = 100;
+            scammer.mintGroupToken(address(fakeGroup), address(fakeTreasury), scammerInitialCRCAmount, loopAmt);
+
+            assertEq(
+                HUB_V2.balanceOf(address(scammer), uint256(uint160(address(fakeGroup)))),
+                scammerInitialCRCAmount * loopAmt
+            );
+        }
+        // The current amount of personal CRC hold by originInviter
+        uint256 inviterAmount = HUB_V2.balanceOf(originInviter, uint256(uint160(originInviter)));
+
+        // Construct operateFlowMatrix
+
+        { // scammer --fakeGroupCRC--> originInviter --originInviterCRC--> scammer
+            TypeDefinitions.FlowEdge[] memory flowEdges = new TypeDefinitions.FlowEdge[](2);
+            TypeDefinitions.Stream[] memory streams = new TypeDefinitions.Stream[](1);
+            bytes memory packCoordinate;
+            address[] memory flowVertices = new address[](3);
+            flowVertices[0] = address(scammer);
+            flowVertices[1] = address(fakeGroup);
+            flowVertices[2] = address(originInviter);
+
+            uint16[] memory indexes;
+            (flowVertices, indexes) = _sortWithMapping(flowVertices);
+
+            flowEdges[0] = TypeDefinitions.FlowEdge({streamSinkId: uint16(0), amount: uint192(inviterAmount)});
+            flowEdges[1] = TypeDefinitions.FlowEdge({streamSinkId: uint16(1), amount: uint192(inviterAmount)});
+
+            uint16[] memory flowEdgeIds = new uint16[](1);
+            flowEdgeIds[0] = uint16(1); // the last flowEdges is terminated edge
+
+            streams[0] = TypeDefinitions.Stream({
+                sourceCoordinate: indexes[0], // source: scammer
+                flowEdgeIds: flowEdgeIds,
+                data: bytes("")
+            });
+
+            uint16[] memory coords = new uint16[]((flowEdges.length) * 3);
+
+            // scammer --fakeGroupCRC--> originInviter
+
+            coords[0] = uint16(indexes[1]);
+            coords[1] = uint16(indexes[0]);
+            coords[2] = uint16(indexes[2]);
+
+            // originInviter --originInviterCRC--> scammer
+
+            coords[3] = uint16(indexes[2]);
+            coords[4] = uint16(indexes[2]);
+            coords[5] = uint16(indexes[0]);
+
+            packCoordinate = _packCoordinates(coords);
+
+            vm.startPrank(address(scammer));
+            // ===================== call operateFlowMatrix =====================
+
+            HUB_V2.operateFlowMatrix(flowVertices, flowEdges, streams, packCoordinate);
+            vm.stopPrank();
+        }
+
+        assertEq(HUB_V2.balanceOf(address(scammer), uint256(uint160(address(originInviter)))), inviterAmount); // Scammer now holds all originInviter's personal CRC
+        assertEq(HUB_V2.balanceOf(address(originInviter), uint256(uint160(address(originInviter)))), 0);
+        assertEq(HUB_V2.balanceOf(address(originInviter), uint256(uint160(address(fakeGroup)))), inviterAmount); // originInviter now holds equivalent amount of fakeGroupCRC
+    }
+
+    /// ======================== Utils function for operateFlowMatrix ========================
+    /**
+     * @notice Sorts an array of addresses in ascending order
+     *         and returns both the sorted array and a mapping (as an array)
+     *         that indicates the original index for each sorted element.
+     *          Helper function from MintRedemptionFlow.t.sol
+     * @param arr The array of addresses to sort.
+     * @return sortedAddresses The sorted array of addresses.
+     * @return indexes An array where each element is the original index
+     *         of the corresponding address in the sorted array.
+     */
+    function _sortWithMapping(address[] memory arr)
+        internal
+        pure
+        returns (address[] memory sortedAddresses, uint16[] memory indexes)
+    {
+        // Initialize the indexes array to track original positions.
+        // Each position i starts with the value i.
+        uint16[] memory permutation = new uint16[](arr.length);
+        for (uint16 i; i < arr.length;) {
+            permutation[i] = i;
+            unchecked {
+                ++i;
+            }
+        }
+
+        // We'll perform a bubble sort on the addresses array.
+        // As we swap addresses, we swap the indexes as well.
+        for (uint256 i = 0; i < arr.length; i++) {
+            for (uint256 j = 0; j < arr.length - i - 1; j++) {
+                // Compare addresses directly (addresses are comparable)
+                if (arr[j] > arr[j + 1]) {
+                    // Swap addresses
+                    address temp = arr[j];
+                    arr[j] = arr[j + 1];
+                    arr[j + 1] = temp;
+
+                    // Swap corresponding indexes to maintain mapping
+                    uint16 tempIndex = permutation[j];
+                    permutation[j] = permutation[j + 1];
+                    permutation[j + 1] = tempIndex;
+                }
+            }
+        }
+
+        indexes = new uint16[](arr.length);
+        for (uint16 i = 0; i < arr.length; i++) {
+            // Place i at the index specified by arr[i]
+            indexes[permutation[i]] = i;
+        }
+        return (arr, indexes);
+    }
+
+    /**
+     * @notice helper function from FlowMatrixGenerator.sol
+     * @dev Packs `coords` (of length 3*E) into 6*E bytes:
+     *      for each triple (c0, c1, c2), produce c0(16 bits), c1(16 bits), c2(16 bits).
+     */
+    function _packCoordinates(uint16[] memory coords) internal pure returns (bytes memory) {
+        require(coords.length % 3 == 0, "Coords length must be multiple of 3");
+        uint256 edgeCount = coords.length / 3;
+        bytes memory result = new bytes(edgeCount * 6);
+
+        for (uint256 i = 0; i < edgeCount; i++) {
+            // 3 coords per edge
+            uint16 c0 = coords[3 * i + 0];
+            uint16 c1 = coords[3 * i + 1];
+            uint16 c2 = coords[3 * i + 2];
+
+            // Each coord => 2 bytes
+            // so offset is i*6
+            uint256 offset = i * 6;
+            result[offset + 0] = bytes1(uint8(c0 >> 8));
+            result[offset + 1] = bytes1(uint8(c0 & 0xFF));
+            result[offset + 2] = bytes1(uint8(c1 >> 8));
+            result[offset + 3] = bytes1(uint8(c1 & 0xFF));
+            result[offset + 4] = bytes1(uint8(c2 >> 8));
+            result[offset + 5] = bytes1(uint8(c2 & 0xFF));
+        }
+        return result;
     }
 }
