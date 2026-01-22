@@ -105,6 +105,44 @@ contract InvitationFarmTest is CirclesV2Setup, HubStorageWrites {
         }
     }
 
+    function testAdminAccessControl(
+        address newAdmin,
+        address newSeeder,
+        address newMaintainer,
+        address inviter,
+        uint256 quota
+    ) public {
+        vm.prank(invitationFarm.admin());
+        vm.expectEmit();
+        emit InvitationFarm.AdminSet(newAdmin);
+        invitationFarm.setAdmin(newAdmin);
+        assertEq(invitationFarm.admin(), newAdmin);
+
+        vm.startPrank(newAdmin);
+        _registerHuman(newSeeder);
+        vm.expectEmit();
+        emit InvitationFarm.SeederSet(newSeeder);
+        invitationFarm.setSeeder(newSeeder);
+
+        vm.expectEmit();
+        emit InvitationFarm.MaintainerSet(newMaintainer);
+        invitationFarm.setMaintainer(newMaintainer);
+
+        _registerHuman(inviter);
+        vm.expectEmit();
+        emit InvitationFarm.InviterQuotaUpdated(inviter, quota);
+        invitationFarm.setInviterQuota(inviter, quota);
+
+        address newInvitationModule = address(new InvitationModule());
+        address genericCallProxy = address(InvitationModule(newInvitationModule).GENERIC_CALL_PROXY());
+
+        vm.expectEmit();
+        emit InvitationFarm.InvitationModuleUpdated(newInvitationModule, genericCallProxy);
+        invitationFarm.updateInvitationModule(newInvitationModule);
+
+        vm.stopPrank();
+    }
+
     function testClaimInvites() public {
         // lets move 3 days, so bots have enough CRC minted for an invite
         vm.warp(block.timestamp + 3 days);
@@ -147,4 +185,9 @@ contract InvitationFarmTest is CirclesV2Setup, HubStorageWrites {
             assertTrue(IHub(HUB).isHuman(bot));
         }
     }
+
+    // TODO
+    // 1. When invitee is not registered as Human
+    // 2. When bot minting fail
+    // 3. When the Inviter or Invitee fund is drained / not being transferred correctly
 }
