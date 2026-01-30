@@ -448,7 +448,6 @@ contract InvitationModuleTest is CirclesV2Setup, HubStorageWrites {
             vm.expectRevert();
             HUB_V2.safeBatchTransferFrom(originInviter, address(invitationModule), ids, values, data);
 
-            uint256 snapShotId = vm.snapshotState();
             // when the invitee don't have InvitationModule enabled, should revert
 
             invitees[0] = invitee4;
@@ -457,9 +456,9 @@ contract InvitationModuleTest is CirclesV2Setup, HubStorageWrites {
             vm.expectRevert(abi.encodeWithSelector(InvitationModule.ModuleNotEnabled.selector, invitee4));
             HUB_V2.safeBatchTransferFrom(originInviter, address(invitationModule), ids, values, abi.encode(invitees));
 
-            vm.revertToState(snapShotId);
-
             // Valid case
+
+            invitees[0] = invitee1;
             vm.prank(originInviter);
             HUB_V2.safeBatchTransferFrom(originInviter, address(invitationModule), ids, values, abi.encode(invitees));
 
