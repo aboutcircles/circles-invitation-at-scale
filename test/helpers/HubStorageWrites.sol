@@ -86,6 +86,7 @@ contract HubStorageWrites is Test {
             0x6c9a6c4a39284e37ed1cf53d337577d14212a4870fb976a4366c693b939918d5,
             bytes32(uint256(uint160(0x75cf11467937ce3F2f357CE24ffc3DBF8fD5c226)))
         );
+
         // set modules[sentinel] = sentinel
         uint256 modulesSlot = uint256(1);
         uint256 modulePadded = uint256(1);
