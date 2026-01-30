@@ -51,9 +51,14 @@ interface ISafe {
 /// @title ReferralsModule Test Contract
 /// @dev Tests account creation, claiming, and referral system features
 contract ReferralsModuleTest is CirclesV2Setup, HubStorageWrites {
+    struct Signer {
+        uint256 x;
+        uint256 y;
+        address verifier; // use address instead of original P256.Verifiers
+    }
     /// @dev Storage slot for passkey signer data
     /// https://github.com/safe-fndn/safe-modules/blob/4367ecf2/modules/passkey/contracts/4337/SafeWebAuthnSharedSigner.sol#L13-L167
-    /// SIGNER_SLOT = uint256(keccak256(abi.encode(address(this), _SIGNER_MAPPING_SLOT)));
+    /// SIGNER_SLOT = uint256(keccak256(abi.encode(address(SafeWebAuthnSharedSigner), _SIGNER_MAPPING_SLOT)));
     uint256 internal constant SIGNER_SLOT =
         38553689938471249931580260399865754279307054632110400389912672281974829735002;
 
@@ -62,6 +67,11 @@ contract ReferralsModuleTest is CirclesV2Setup, HubStorageWrites {
 
     /// @dev Address of the Safe WebAuthn shared signer contract
     address internal constant SAFE_WEB_AUTHN_SHARED_SIGNER = address(0xfD90FAd33ee8b58f32c00aceEad1358e4AFC23f9);
+
+    bytes constant SAFE_PROXY_BYTECODE =
+        hex"608060405273ffffffffffffffffffffffffffffffffffffffff600054167fa619486e0000000000000000000000000000000000000000000000000000000060003514156050578060005260206000f35b3660008037600080366000845af43d6000803e60008114156070573d6000fd5b3d6000f3fea264697066735822122003d1488ee65e08fa41e58e888a9865554c535f2c77126a82cb4c0f917f31441364736f6c63430007060033";
+
+    address internal constant SAFE_4337_MODULE = address(0x75cf11467937ce3F2f357CE24ffc3DBF8fD5c226);
 
     /// @dev Current day timestamp for testing
     uint64 public day;
@@ -163,9 +173,44 @@ contract ReferralsModuleTest is CirclesV2Setup, HubStorageWrites {
         _setTrust(proxyInviter, originInviter);
     }
 
+    function testCreateSingleAccount() public {
+        bytes memory data = abi.encode(
+            address(referralsModule), abi.encodeWithSelector(bytes4(ReferralsModule.createAccount.selector), signer1)
+        );
+
+        // create 1 referral using proxy CRC
+        vm.startPrank(originInviter);
+
+        HUB_V2.safeTransferFrom(
+            originInviter, address(invitationModule), uint256(uint160(proxyInviter)), 96 ether, data
+        );
+
+        vm.stopPrank();
+
+        (address account1, bool isClaimed1) = referralsModule.accounts(signer1);
+
+        assertEq(account1, referralsModule.computeAddress(signer1));
+        assertEq(isClaimed1, false);
+        assertTrue(account1.code.length > 0);
+        assertEq(account1.code, SAFE_PROXY_BYTECODE);
+        assertTrue(ISafe(account1).isOwner(SAFE_WEB_AUTHN_SHARED_SIGNER));
+        assertTrue(ISafe(account1).isModuleEnabled(address(referralsModule)));
+        assertTrue(ISafe(account1).isModuleEnabled(address(invitationModule)));
+        assertTrue(ISafe(account1).isModuleEnabled(SAFE_4337_MODULE));
+        assertTrue(_isSignerSlotEmptyInSafeWebAuthnSharedSigner(account1));
+
+        assertEq(HUB_V2.balanceOf(address(invitationModule), uint256(uint160(originInviter))), 0);
+        assertEq(HUB_V2.balanceOf(address(invitationModule), uint256(uint160(proxyInviter))), 0);
+        assertEq(HUB_V2.balanceOf(address(referralsModule), uint256(uint160(originInviter))), 0);
+        assertEq(HUB_V2.balanceOf(address(referralsModule), uint256(uint160(proxyInviter))), 0);
+        assertEq(HUB_V2.balanceOf(account1, uint256(uint160(account1))), 48 ether);
+
+        vm.stopPrank();
+    }
+
     /// @notice Test creating referral accounts through the invitation system
     /// @dev Tests the complete flow of creating accounts via batch transfer to invitation module
-    function testCreateAccount() public {
+    function testCreateAccounts() public {
         // the public addresses of offchain shared secrets
         address[] memory signers = new address[](2);
         signers[0] = signer1;
@@ -195,10 +240,22 @@ contract ReferralsModuleTest is CirclesV2Setup, HubStorageWrites {
         assertEq(account1, referralsModule.computeAddress(signer1));
         assertEq(isClaimed1, false);
         assertTrue(account1.code.length > 0);
+        assertEq(account1.code, SAFE_PROXY_BYTECODE);
+        assertTrue(ISafe(account1).isOwner(SAFE_WEB_AUTHN_SHARED_SIGNER));
+        assertTrue(ISafe(account1).isModuleEnabled(address(referralsModule)));
+        assertTrue(ISafe(account1).isModuleEnabled(address(invitationModule)));
+        assertTrue(ISafe(account1).isModuleEnabled(SAFE_4337_MODULE));
+        assertTrue(_isSignerSlotEmptyInSafeWebAuthnSharedSigner(account1));
 
         assertEq(account2, referralsModule.computeAddress(signer2));
         assertEq(isClaimed2, false);
         assertTrue(account2.code.length > 0);
+        assertEq(account2.code, SAFE_PROXY_BYTECODE);
+        assertTrue(ISafe(account2).isOwner(SAFE_WEB_AUTHN_SHARED_SIGNER));
+        assertTrue(ISafe(account2).isModuleEnabled(address(referralsModule)));
+        assertTrue(ISafe(account2).isModuleEnabled(address(invitationModule)));
+        assertTrue(ISafe(account2).isModuleEnabled(SAFE_4337_MODULE));
+        assertTrue(_isSignerSlotEmptyInSafeWebAuthnSharedSigner(account2));
 
         assertEq(HUB_V2.balanceOf(address(invitationModule), uint256(uint160(originInviter))), 0);
         assertEq(HUB_V2.balanceOf(address(invitationModule), uint256(uint160(proxyInviter))), 0);
@@ -257,15 +314,18 @@ contract ReferralsModuleTest is CirclesV2Setup, HubStorageWrites {
 
         referralsModule.claimAccount(x1, y1, verifier, signature, metadataDigest);
 
-        (address account,) = referralsModule.accounts(signer1);
+        (address account1, bool isClaimed1) = referralsModule.accounts(signer1);
 
-        assertTrue(HUB_V2.isHuman(account));
-        assertEq(HUB_V2.balanceOf(account, uint256(uint160(account))), 48 ether);
-        assertEq(NAME_REGISTRY.avatarToMetaDataDigest(account), metadataDigest);
-        assertFalse(ISafe(account).isModuleEnabled(address(referralsModule)));
+        assertTrue(HUB_V2.isHuman(account1));
+        assertEq(HUB_V2.balanceOf(account1, uint256(uint160(account1))), 48 ether);
+        assertEq(NAME_REGISTRY.avatarToMetaDataDigest(account1), metadataDigest);
+        assertFalse(ISafe(account1).isModuleEnabled(address(referralsModule)));
+        assertEq(isClaimed1, true);
+        assertTrue(ISafe(account1).isOwner(SAFE_WEB_AUTHN_SHARED_SIGNER));
+        assertFalse(ISafe(account1).isOwner(signer1));
 
         bytes memory passkey = abi.encode(x1, y1, verifier);
-        bytes memory storedPasskey = ISafe(account).getStorageAt(SIGNER_SLOT, 3);
+        bytes memory storedPasskey = ISafe(account1).getStorageAt(SIGNER_SLOT, 3);
         assertEq(keccak256(passkey), keccak256(storedPasskey));
 
         // Revert: Invalid signature
@@ -276,14 +336,11 @@ contract ReferralsModuleTest is CirclesV2Setup, HubStorageWrites {
         // Revert: Try to claim the same account
         vm.expectRevert(ReferralsModuleTest.AccountAlreadyClaimed.selector);
         referralsModule.claimAccount(x1, y1, verifier, signature, metadataDigest);
-        assertTrue(ISafe(account).isOwner(SAFE_WEB_AUTHN_SHARED_SIGNER));
-        assertFalse(ISafe(account).isOwner(signer1));
 
         // Revert: invalid signer
         (, uint256 pkIS) = makeAddrAndKey("invalidSigner");
         (v, r, s) = vm.sign(pkIS, digest);
         signature = abi.encodePacked(r, s, v);
-
         vm.expectRevert(ReferralsModuleTest.InvalidSignature.selector);
         referralsModule.claimAccount(x1, y1, verifier, signature, metadataDigest);
 
@@ -298,15 +355,17 @@ contract ReferralsModuleTest is CirclesV2Setup, HubStorageWrites {
 
         referralsModule.claimAccount(x2, y2, verifier, signature, metadataDigest);
 
-        (account,) = referralsModule.accounts(signer2);
+        (address account2, bool isClaimed2) = referralsModule.accounts(signer2);
 
-        assertTrue(HUB_V2.isHuman(account));
-        assertEq(HUB_V2.balanceOf(account, uint256(uint160(account))), 48 ether);
-        assertEq(NAME_REGISTRY.avatarToMetaDataDigest(account), metadataDigest);
-        assertFalse(ISafe(account).isModuleEnabled(address(referralsModule)));
-
+        assertTrue(HUB_V2.isHuman(account2));
+        assertEq(HUB_V2.balanceOf(account2, uint256(uint160(account2))), 48 ether);
+        assertEq(NAME_REGISTRY.avatarToMetaDataDigest(account2), metadataDigest);
+        assertEq(isClaimed2, true);
+        assertFalse(ISafe(account2).isModuleEnabled(address(referralsModule)));
+        assertTrue(ISafe(account2).isOwner(SAFE_WEB_AUTHN_SHARED_SIGNER));
+        assertFalse(ISafe(account2).isOwner(signer2));
         passkey = abi.encode(x2, y2, verifier);
-        storedPasskey = ISafe(account).getStorageAt(SIGNER_SLOT, 3);
+        storedPasskey = ISafe(account2).getStorageAt(SIGNER_SLOT, 3);
         assertEq(keccak256(passkey), keccak256(storedPasskey));
     }
 
@@ -327,9 +386,16 @@ contract ReferralsModuleTest is CirclesV2Setup, HubStorageWrites {
 
         referralsModule.claimAccount(x1, y1, verifier, signature, metadataDigest, affiliateGroup);
 
-        (address account,) = referralsModule.accounts(signer1);
+        (address account, bool isClaimed) = referralsModule.accounts(signer1);
         assertEq(IAffiliateGroupRegistry(AFFILIATE_GROUP_REGISTRY).affiliateGroup(account), affiliateGroup);
         assertFalse(ISafe(account).isModuleEnabled(address(referralsModule)));
+        assertTrue(HUB_V2.isHuman(account));
+        assertEq(HUB_V2.balanceOf(account, uint256(uint160(account))), 48 ether);
+        assertEq(NAME_REGISTRY.avatarToMetaDataDigest(account), metadataDigest);
+        assertEq(isClaimed, true);
+        assertFalse(ISafe(account).isModuleEnabled(address(referralsModule)));
+        assertTrue(ISafe(account).isOwner(SAFE_WEB_AUTHN_SHARED_SIGNER));
+        assertFalse(ISafe(account).isOwner(signer2));
     }
 
     /// @notice Helper function to create accounts for testing
@@ -356,5 +422,49 @@ contract ReferralsModuleTest is CirclesV2Setup, HubStorageWrites {
         HUB_V2.safeBatchTransferFrom(originInviter, address(invitationModule), ids, values, data);
 
         vm.stopPrank();
+    }
+
+    function _isSignerSlotEmptyInSafeWebAuthnSharedSigner(address account) internal view returns (bool) {
+        // Dev: implementation copied from rom SafeWebAuthnSharedSigner contract
+        bytes memory getStorageAtData = abi.encodeCall(ISafe(account).getStorageAt, (SIGNER_SLOT, 3));
+        Signer memory signer;
+        // Call the {StorageAccessible.getStorageAt} with assembly. This allows us to return a
+        // zeroed out signer configuration instead of reverting for `account`s that are not Safes.
+        // We also, expect the implementation to behave **exactly** like the Safe's - that is it
+        // should encode the return data using a standard ABI encoding:
+        // - The first 32 bytes is the offset of the values bytes array, always `0x20`
+        // - The second 32 bytes is the length of the values bytes array, always `0x60`
+        // - the following 3 words (96 bytes) are the values of the signer configuration.
+
+        // solhint-disable-next-line no-inline-assembly
+        assembly ("memory-safe") {
+            // Note that Yul expressions are evaluated in reverse order, so the `staticcall` is the
+            // first thing to be evaluated in the nested `and` expression.
+            if and(
+                and(
+                    // The offset of the ABI encoded bytes is 0x20, this should always be the case
+                    // for standard ABI encoding of `(bytes)` tuple that `getStorageAt` returns.
+                    eq(mload(0x00), 0x20),
+                    // The length of the encoded bytes is exactly 0x60 bytes (i.e. 3 words, which is
+                    // exactly how much we read from the Safe's storage in the `getStorageAt` call).
+                    eq(mload(0x20), 0x60)
+                ),
+                and(
+                    // The length of the return data should be exactly 0xa0 bytes, which should
+                    // always be the case for the Safe's `getStorageAt` implementation.
+                    eq(returndatasize(), 0xa0),
+                    // The call succeeded. We write the first two words of the return data into the
+                    // scratch space, as we need to inspect them before copying the signer
+                    // signer configuration to our `signer` memory pointer.
+                    staticcall(gas(), account, add(getStorageAtData, 0x20), mload(getStorageAtData), 0x00, 0x40)
+                )
+            ) {
+                // Copy only the storage values from the return data to our `signer` memory address.
+                // This only happens on success, so the `signer` value will be zeroed out if any of
+                // the above conditions fail, indicating that no signer is configured.
+                returndatacopy(signer, 0x40, 0x60)
+            }
+        }
+        return signer.x == 0 && signer.y == 0 && signer.verifier == address(0);
     }
 }

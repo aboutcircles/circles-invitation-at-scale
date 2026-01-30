@@ -168,6 +168,17 @@ contract InvitationFarmTest is CirclesV2Setup, HubStorageWrites {
         }
     }
 
+    function testClaimInvitesWithoutQuota(uint256 numOfInvites) public {
+        // should be a batch tx
+        vm.startPrank(originInviter);
+        vm.expectRevert(InvitationFarm.ExceedsInviteQuota.selector);
+        invitationFarm.claimInvites(numOfInvites);
+
+        vm.startPrank(originInviter);
+        vm.expectRevert(InvitationFarm.ExceedsInviteQuota.selector);
+        invitationFarm.claimInvite();
+    }
+
     function testFarmGrow() public {
         // lets move 2 days + 1 hour, so bots have enough CRC to invite same number of bots
         vm.warp(block.timestamp + 2 days + 1 hours);

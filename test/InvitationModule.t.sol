@@ -115,14 +115,13 @@ contract InvitationModuleTest is CirclesV2Setup, HubStorageWrites {
 
     /**
      * @notice Tests the direct invitation functionality.
-     * @param isModuleEnabled A boolean to control whether the InvitationModule is enabled for the origin inviter.
      * @dev This test covers four scenarios:
      * 1. Origin inviter has the module enabled and doesn't trust the invitee (should be valid).
      * 2. Origin inviter has the module enabled and trusts the invitee (should be valid).
      * 3. Origin inviter doesn't have the module enabled but trusts the invitee (should be valid).
      * 4. Origin inviter doesn't have the module enabled and doesn't trust the invitee (should revert).
      */
-    function testDirectInvite(bool isModuleEnabled) public {
+    function testDirectInvite() public {
         {
             // Revert: Value less than 96 CRC
             vm.prank(originInviter);
@@ -160,8 +159,10 @@ contract InvitationModuleTest is CirclesV2Setup, HubStorageWrites {
             );
         }
 
-        // Case 1: OriginInviter has invitation module enabled && originInviter don't trust invitee1 -> valid
-        if (isModuleEnabled) {
+        uint256 snapShotId = vm.snapshotState();
+        {
+            // Case 1: OriginInviter has invitation module enabled && originInviter don't trust invitee1 -> valid
+
             vm.prank(originInviter);
             vm.expectEmit(address(invitationModule));
             emit InvitationModule.RegisterHuman(invitee1, originInviter, originInviter);
@@ -239,7 +240,9 @@ contract InvitationModuleTest is CirclesV2Setup, HubStorageWrites {
             (, uint256 invitee3Expiry) = HUB_V2.trustMarkers(fakeInviterSafe, invitee3);
             assertTrue(invitee3Expiry == type(uint96).max);
             assertEq(HUB_V2.balanceOf(address(invitationModule), uint256(uint160(fakeInviterSafe))), 0); // invitationModule don't hold anything.
-        } else {
+        }
+        vm.revertToState(snapShotId);
+        {
             // Case 4: OriginInviter don't have invitation module disabled  && don't trust invitee1 -> revert
 
             vm.prank(originInviter);
@@ -280,13 +283,12 @@ contract InvitationModuleTest is CirclesV2Setup, HubStorageWrites {
 
     /**
      * @notice Tests the proxy invitation functionality.
-     * @param isModuleEnabled A boolean to control whether the InvitationModule is enabled for the inviters.
      * @dev This test covers three scenarios:
      * 1. Both origin and proxy inviters have the module enabled (should be valid).
      * 2. Both origin and proxy inviters do not have the module enabled (should revert).
      * 3. Origin inviter has the module enabled, but the proxy inviter does not (should revert).
      */
-    function testProxyInvite(bool isModuleEnabled) public {
+    function testProxyInvite() public {
         {
             // Revert Human Enforcement Failed
 
@@ -316,8 +318,8 @@ contract InvitationModuleTest is CirclesV2Setup, HubStorageWrites {
             );
             _setTrust(proxyInviter, originInviter);
         }
-
-        if (isModuleEnabled) {
+        uint256 snapShotId = vm.snapshotState();
+        {
             // Case 1: originInviter and proxyInviter has module enabled -> valid
             vm.prank(originInviter);
             HUB_V2.safeTransferFrom(
@@ -333,9 +335,10 @@ contract InvitationModuleTest is CirclesV2Setup, HubStorageWrites {
             assertTrue(expiryProxy == block.timestamp);
 
             assertEq(HUB_V2.balanceOf(address(invitationModule), uint256(uint160(originInviter))), 0); // invitationModule don't hold anything.
+        }
+        vm.revertToState(snapShotId);
 
-            return;
-        } else {
+        {
             vm.prank(originInviter);
             IModuleManager(originInviter).disableModule(address(0x01), address(invitationModule));
 
@@ -368,7 +371,38 @@ contract InvitationModuleTest is CirclesV2Setup, HubStorageWrites {
                 originInviter, address(invitationModule), uint256(uint160(proxyInviter)), 96 ether, abi.encode(invitee1)
             );
             assertTrue(HUB_V2.isHuman(invitee1));
-            return;
+        }
+        vm.revertToState(snapShotId);
+        {
+
+            bytes memory maliciousTransferCallData = abi.encodeWithSelector(
+                IHub.safeTransferFrom.selector,
+                proxyInviter,
+                originInviter,
+                uint256(uint160(proxyInviter)),
+                96 ether,
+                ""
+            );
+
+            bytes memory maliciousModuleCallData = abi.encodeWithSelector(
+                IModuleManager.execTransactionFromModuleReturnData.selector,
+                address(HUB_V2),
+                0,
+                maliciousTransferCallData,
+                0
+            );
+
+            bytes memory genericCallPayload = abi.encode(proxyInviter, maliciousModuleCallData);
+
+            vm.prank(originInviter);
+            vm.expectRevert(
+                abi.encodeWithSelector(
+                    GenericCallProxy.GenericCallReverted.selector, abi.encodeWithSignature("Error(string)", "GS104")
+                )
+            );
+            HUB_V2.safeTransferFrom(
+                originInviter, address(invitationModule), uint256(uint160(proxyInviter)), 96 ether, genericCallPayload
+            );
         }
     }
 
@@ -378,9 +412,9 @@ contract InvitationModuleTest is CirclesV2Setup, HubStorageWrites {
      * It also checks for various failure conditions, such as insufficient CRC, invalid data,
      * and unreachable code paths.
      */
-    function testBatchDirectInvite() public {
+    function testBatchDirectInvite(bytes memory data) public {
         _setCRCBalance(uint256(uint160(originInviter)), originInviter, day, uint192(192 ether));
-
+        vm.assume(data.length > 32);
         // Note: in InvitationModule, these 2 lines are not reachable  as it will revert in ERC1155.ERC1155InvalidArrayLength(uint256,uint256) 0x5b059991
         // if (numberOfInvitees != values.length) revert ArrayLengthMismatch(); // dead branch, will first revert in ERC1155 in Hub 0x5b059991
         // if (numberOfInvitees < 2) revert TooFewInvites(); // dead branch, will first revert the line before this
@@ -406,14 +440,19 @@ contract InvitationModuleTest is CirclesV2Setup, HubStorageWrites {
 
             values[1] = 96 ether;
 
-            // Revert: Invalid data that will get _isGenericCall(data) == true, but fail at calling genericCallProxy
-            address randomAddress = makeAddr("randomAddr");
-            bytes memory data = abi.encode(randomAddress);
-            vm.assume(uint256(uint160(randomAddress)) > data.length);
-
             vm.prank(originInviter);
+            // Revert: Invalid data that will get _isGenericCall(data) == true, but fail at calling genericCallProxy
             vm.expectRevert();
             HUB_V2.safeBatchTransferFrom(originInviter, address(invitationModule), ids, values, data);
+
+            // when the invitee don't have InvitationModule enabled, should revert
+            address invitee4 = makeAddr("invitee4");
+            _simulateSafe(invitee4);
+            invitees[0] = invitee4;
+
+            vm.prank(originInviter);
+            vm.expectRevert(abi.encodeWithSelector(InvitationModule.ModuleNotEnabled.selector, invitee3));
+            HUB_V2.safeBatchTransferFrom(originInviter, address(invitationModule), ids, values, abi.encode(invitees));
 
             // Valid case
             vm.prank(originInviter);
@@ -439,7 +478,7 @@ contract InvitationModuleTest is CirclesV2Setup, HubStorageWrites {
      * It also checks for various failure conditions, such as insufficient CRC, missing trust relationships,
      * and invalid data.
      */
-    function testBatchProxyInvite() public {
+    function testBatchProxyInvite(bytes memory data) public {
         _setCRCBalance(uint256(uint160(proxyInviter)), originInviter, day, uint192(192 ether));
 
         {
@@ -473,9 +512,8 @@ contract InvitationModuleTest is CirclesV2Setup, HubStorageWrites {
             _setTrust(proxyInviter, originInviter);
 
             // Revert: Invalid data that will get _isGenericCall(data) == true, but fail at calling genericCallProxy
-            address randomAddress = makeAddr("randomAddr");
-            bytes memory data = abi.encode(randomAddress);
-            vm.assume(uint256(uint160(randomAddress)) > data.length);
+
+            vm.assume(data.length > 32);
 
             vm.prank(originInviter);
             vm.expectRevert();
@@ -566,8 +604,7 @@ contract InvitationModuleTest is CirclesV2Setup, HubStorageWrites {
         vm.prank(originInviter);
         vm.expectRevert(
             abi.encodeWithSelector(
-                GenericCallProxy.GenericCallReverted.selector,
-                abi.encodePacked(InvitationModuleTest.Reentrancy.selector)
+                GenericCallProxy.GenericCallReverted.selector, abi.encodePacked(InvitationModule.Reentrancy.selector)
             )
         ); // revert GenericCallReverted(Reentrancy())
         HUB_V2.safeTransferFrom(
@@ -594,8 +631,7 @@ contract InvitationModuleTest is CirclesV2Setup, HubStorageWrites {
         vm.prank(originInviter);
         vm.expectRevert(
             abi.encodeWithSelector(
-                GenericCallProxy.GenericCallReverted.selector,
-                abi.encodePacked(InvitationModuleTest.Reentrancy.selector)
+                GenericCallProxy.GenericCallReverted.selector, abi.encodePacked(InvitationModule.Reentrancy.selector)
             )
         ); // revert GenericCallReverted(Reentrancy())
         HUB_V2.safeBatchTransferFrom(originInviter, address(invitationModule), ids, values, fullCalldataWithAddr);
