@@ -45,6 +45,7 @@ contract InvitationModuleTest is CirclesV2Setup, HubStorageWrites {
     address invitee2;
     /// @notice The address of the third invitee.
     address invitee3;
+    address invitee4;
 
     /// @notice The address for the fake contract that mimics an inviter but doesn't have Safe functionalities.
     address fakeInviterSafe;
@@ -77,6 +78,7 @@ contract InvitationModuleTest is CirclesV2Setup, HubStorageWrites {
         invitee1 = makeAddr("invitee1");
         invitee2 = makeAddr("invitee2");
         invitee3 = makeAddr("invited3");
+        invitee4 = makeAddr("invitee4");
 
         // create test human accounts as safes
         // proxy
@@ -93,6 +95,7 @@ contract InvitationModuleTest is CirclesV2Setup, HubStorageWrites {
         _simulateSafe(invitee1);
         _simulateSafe(invitee2);
         _simulateSafe(invitee3);
+        _simulateSafe(invitee4);
 
         _registerHuman(address(fakeInviterSafe));
         _setCRCBalance(uint256(uint160(address(fakeInviterSafe))), address(fakeInviterSafe), day, uint192(96 ether));
@@ -445,14 +448,16 @@ contract InvitationModuleTest is CirclesV2Setup, HubStorageWrites {
             vm.expectRevert();
             HUB_V2.safeBatchTransferFrom(originInviter, address(invitationModule), ids, values, data);
 
+            uint256 snapShotId = vm.snapshotState();
             // when the invitee don't have InvitationModule enabled, should revert
-            address invitee4 = makeAddr("invitee4");
-            _simulateSafe(invitee4);
+
             invitees[0] = invitee4;
 
             vm.prank(originInviter);
-            vm.expectRevert(abi.encodeWithSelector(InvitationModule.ModuleNotEnabled.selector, invitee3));
+            vm.expectRevert(abi.encodeWithSelector(InvitationModule.ModuleNotEnabled.selector, invitee4));
             HUB_V2.safeBatchTransferFrom(originInviter, address(invitationModule), ids, values, abi.encode(invitees));
+
+            vm.revertToState(snapShotId);
 
             // Valid case
             vm.prank(originInviter);
@@ -749,6 +754,80 @@ contract InvitationModuleTest is CirclesV2Setup, HubStorageWrites {
         assertEq(HUB_V2.balanceOf(address(scammer), uint256(uint160(address(originInviter)))), inviterAmount); // Scammer now holds all originInviter's personal CRC
         assertEq(HUB_V2.balanceOf(address(originInviter), uint256(uint160(address(originInviter)))), 0);
         assertEq(HUB_V2.balanceOf(address(originInviter), uint256(uint160(address(fakeGroup)))), inviterAmount); // originInviter now holds equivalent amount of fakeGroupCRC
+    }
+
+    // Test when InvitationModule don't trust proxyInviter, operateFlowMatrix will fail
+    function testTrustInviter() public {
+        // originInviter -personalCRC->  proxyInviter -proxyCRC-> InvitationModule
+        _setCRCBalance(uint256(uint160(originInviter)), originInviter, day, uint192(96 ether));
+        _setCRCBalance(uint256(uint160(proxyInviter)), proxyInviter, day, uint192(96 ether));
+
+        vm.prank(proxyInviter);
+        HUB_V2.trust(originInviter, type(uint96).max);
+        assertEq(HUB_V2.isTrusted(proxyInviter, originInviter), true);
+
+        vm.prank(originInviter);
+        HUB_V2.setApprovalForAll(originInviter, true);
+        assertEq(HUB_V2.isApprovedForAll(originInviter, originInviter), true);
+        // InvitationModule not yet trust proxyInviter
+
+        TypeDefinitions.FlowEdge[] memory flowEdges = new TypeDefinitions.FlowEdge[](2);
+        TypeDefinitions.Stream[] memory streams = new TypeDefinitions.Stream[](1);
+        bytes memory packCoordinate;
+        address[] memory flowVertices = new address[](3);
+        flowVertices[0] = address(originInviter);
+        flowVertices[1] = address(proxyInviter);
+        flowVertices[2] = address(invitationModule);
+
+        uint16[] memory indexes;
+        (flowVertices, indexes) = _sortWithMapping(flowVertices);
+
+        flowEdges[0] = TypeDefinitions.FlowEdge({streamSinkId: uint16(0), amount: uint192(96 ether)});
+        flowEdges[1] = TypeDefinitions.FlowEdge({streamSinkId: uint16(1), amount: uint192(96 ether)});
+
+        uint16[] memory flowEdgeIds = new uint16[](1);
+        flowEdgeIds[0] = uint16(1);
+
+        streams[0] = TypeDefinitions.Stream({
+            sourceCoordinate: indexes[0], // source: originInviter
+            flowEdgeIds: flowEdgeIds,
+            data: abi.encode(invitee1)
+        });
+
+        uint16[] memory coords = new uint16[]((flowEdges.length) * 3);
+
+        // originInviter --originInviterCRC--> proxyInviter
+
+        coords[0] = uint16(indexes[0]);
+        coords[1] = uint16(indexes[0]);
+        coords[2] = uint16(indexes[1]);
+
+        // proxyInviter --proxyInviterCRC--> InvitationModule
+
+        coords[3] = uint16(indexes[1]);
+        coords[4] = uint16(indexes[1]);
+        coords[5] = uint16(indexes[2]);
+
+        packCoordinate = _packCoordinates(coords);
+
+        vm.startPrank(address(originInviter));
+        // ===================== call operateFlowMatrix =====================
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                IHub.CirclesErrorAddressUintArgs.selector, address(invitationModule), uint256(uint160(proxyInviter)), 33
+            )
+        );
+        HUB_V2.operateFlowMatrix(flowVertices, flowEdges, streams, packCoordinate);
+        vm.stopPrank();
+        assertEq(HUB_V2.isHuman(invitee1), false);
+
+        // InvitationModule org trust inviter
+        invitationModule.trustInviter(proxyInviter);
+        vm.startPrank(address(originInviter));
+
+        HUB_V2.operateFlowMatrix(flowVertices, flowEdges, streams, packCoordinate);
+        vm.stopPrank();
+        assertEq(HUB_V2.isHuman(invitee1), true);
     }
 
     /// ======================== Utils function for operateFlowMatrix ========================
